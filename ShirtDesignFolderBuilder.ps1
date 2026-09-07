@@ -5,12 +5,13 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $script:AppName = 'J&M Apparel Shirt Design Folder Builder'
-$script:AppVersion = [version]'2.0.0'
+$script:AppVersion = [version]'2.1.0'
 $processExecutable = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 $processName = [System.IO.Path]::GetFileNameWithoutExtension($processExecutable)
 $script:ProgramDirectory = if ($processName -in @('powershell', 'powershell_ise', 'pwsh')) { $PSScriptRoot } else { Split-Path -Parent $processExecutable }
 $script:DataDirectory = Join-Path $env:APPDATA 'ShirtDesignFolderBuilder'
 $script:SettingsPath = Join-Path $script:DataDirectory 'settings.json'
+$script:CacheDirectory = Join-Path $script:DataDirectory 'Cache'
 $script:Settings = $null
 
 function New-DefaultSettings {
@@ -408,6 +409,44 @@ function Refresh-CreatedDesigns {
     }
 }
 
+function Clear-CreatedDesignHistoryAndCache {
+    $answer = [System.Windows.Forms.MessageBox]::Show(
+        "Clear the Created Designs list and temporary app cache files?`r`n`r`nYour actual design folders, files, categories, subcategories, and folder template will NOT be deleted.",
+        $script:AppName,
+        'YesNo',
+        'Warning'
+    )
+    if ($answer -ne 'Yes') { return }
+
+    try {
+        $historyCount = @($script:Settings.CreatedDesigns).Count
+        $script:Settings.CreatedDesigns = @()
+        Save-Settings
+
+        $cacheItemsRemoved = 0
+        if (Test-Path -LiteralPath $script:CacheDirectory -PathType Container) {
+            $cacheItemsRemoved += @(Get-ChildItem -LiteralPath $script:CacheDirectory -Force -ErrorAction SilentlyContinue).Count
+            Remove-Item -LiteralPath $script:CacheDirectory -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'ShirtFolderUpdate_*' -ErrorAction SilentlyContinue | ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            if (-not (Test-Path -LiteralPath $_.FullName)) { $cacheItemsRemoved++ }
+        }
+
+        Refresh-CreatedDesigns
+        Update-Preview
+        [System.Windows.Forms.MessageBox]::Show(
+            "Cleanup complete.`r`n`r`nHistory entries cleared: $historyCount`r`nCache items removed: $cacheItemsRemoved`r`n`r`nNo design folders or design files were deleted.",
+            $script:AppName,
+            'OK',
+            'Information'
+        ) | Out-Null
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("The cleanup could not be completed.`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Error') | Out-Null
+    }
+}
+
 function Get-SelectedCreatedDesign {
     if ($gridCreated.SelectedRows.Count -eq 0) { return $null }
     $path = [string]$gridCreated.SelectedRows[0].Cells['Path'].Value
@@ -441,7 +480,12 @@ $form = New-Object System.Windows.Forms.Form
 $form.Text = $script:AppName
 $form.StartPosition = 'CenterScreen'
 $form.Size = New-Object System.Drawing.Size(1020, 820)
-$form.MinimumSize = New-Object System.Drawing.Size(920, 700)
+$form.MinimumSize = New-Object System.Drawing.Size(620, 640)
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
+$form.MaximizeBox = $true
+$form.MinimizeBox = $true
+$form.SizeGripStyle = [System.Windows.Forms.SizeGripStyle]::Show
+$form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 $form.BackColor = [System.Drawing.Color]::FromArgb(244, 248, 252)
 $programIconPath = Join-Path $script:ProgramDirectory 'JM-Folder-Creator.ico'
@@ -506,6 +550,7 @@ $layout.Controls.Add($tabs, 0, 2)
 $tabCreate = New-Object System.Windows.Forms.TabPage
 $tabCreate.Text = 'Create Folder Set'
 $tabCreate.BackColor = $form.BackColor
+$tabCreate.AutoScroll = $true
 $tabs.TabPages.Add($tabCreate)
 
 $createGroup = New-Object System.Windows.Forms.GroupBox
@@ -605,7 +650,9 @@ $btnRemoveRecord = New-Button 'Remove From List' 0 0 160 38
 $btnRemoveRecord.BackColor = [System.Drawing.Color]::FromArgb(139, 70, 63)
 $btnRefreshCreated = New-Button 'Refresh' 0 0 110 38
 $btnRefreshCreated.BackColor = [System.Drawing.Color]::FromArgb(78, 91, 87)
-$createdButtons.Controls.AddRange(@($btnOpenDesign, $btnRenameDesign, $btnRepairDesign, $btnRemoveRecord, $btnRefreshCreated))
+$btnClearHistoryCache = New-Button 'Clear History && Cache' 0 0 190 38
+$btnClearHistoryCache.BackColor = [System.Drawing.Color]::FromArgb(139, 70, 63)
+$createdButtons.Controls.AddRange(@($btnOpenDesign, $btnRenameDesign, $btnRepairDesign, $btnRemoveRecord, $btnRefreshCreated, $btnClearHistoryCache))
 
 # SETTINGS TAB
 $tabSettings = New-Object System.Windows.Forms.TabPage
@@ -645,7 +692,8 @@ $lstCategories = New-Object System.Windows.Forms.ListBox
 $lstCategories.Location = New-Object System.Drawing.Point(25, 50)
 $lstCategories.Size = New-Object System.Drawing.Size(375, 350)
 $tabCat.Controls.Add($lstCategories)
-$tabCat.Controls.Add((New-Label 'Subcategories for selected category (BB)' 465 22 410))
+$lblSubcategoryHeading = New-Label 'Subcategories for selected category (BB)' 465 22 410
+$tabCat.Controls.Add($lblSubcategoryHeading)
 $lstSubcategories = New-Object System.Windows.Forms.ListBox
 $lstSubcategories.Location = New-Object System.Drawing.Point(465, 50)
 $lstSubcategories.Size = New-Object System.Drawing.Size(375, 350)
@@ -659,7 +707,8 @@ $btnRenameSubcategory = New-Button 'Rename' 580 420 110
 $btnDeleteSubcategory = New-Button 'Delete' 700 420 110
 $btnDeleteSubcategory.BackColor = [System.Drawing.Color]::FromArgb(139, 70, 63)
 $tabCat.Controls.AddRange(@($btnAddCategory, $btnRenameCategory, $btnDeleteCategory, $btnAddSubcategory, $btnRenameSubcategory, $btnDeleteSubcategory))
-$tabCat.Controls.Add((New-Label 'IDs are assigned automatically and remain fixed so existing design codes never change.' 25 474 820 30))
+$lblCategoryIds = New-Label 'IDs are assigned automatically and remain fixed so existing design codes never change.' 25 474 820 30
+$tabCat.Controls.Add($lblCategoryIds)
 
 $tabFolders = New-Object System.Windows.Forms.TabPage
 $tabFolders.Text = 'Folder Template'
@@ -706,18 +755,22 @@ $tabUpdates = New-Object System.Windows.Forms.TabPage
 $tabUpdates.Text = 'Updates'
 $tabUpdates.AutoScroll = $true
 $settingsTabs.TabPages.Add($tabUpdates)
-$tabUpdates.Controls.Add((New-Label "Current program version: $($script:AppVersion)" 28 24 600 28))
-$tabUpdates.Controls.Add((New-Label 'GitHub owner or username' 28 72 350))
+$lblCurrentVersion = New-Label "Current program version: $($script:AppVersion)" 28 24 600 28
+$tabUpdates.Controls.Add($lblCurrentVersion)
+$lblGitHubOwner = New-Label 'GitHub owner or username' 28 72 350
+$tabUpdates.Controls.Add($lblGitHubOwner)
 $txtGitHubOwner = New-Object System.Windows.Forms.TextBox
 $txtGitHubOwner.Location = New-Object System.Drawing.Point(28, 100)
 $txtGitHubOwner.Size = New-Object System.Drawing.Size(390, 30)
 $tabUpdates.Controls.Add($txtGitHubOwner)
-$tabUpdates.Controls.Add((New-Label 'GitHub repository name' 455 72 350))
+$lblGitHubRepository = New-Label 'GitHub repository name' 455 72 350
+$tabUpdates.Controls.Add($lblGitHubRepository)
 $txtGitHubRepository = New-Object System.Windows.Forms.TextBox
 $txtGitHubRepository.Location = New-Object System.Drawing.Point(455, 100)
 $txtGitHubRepository.Size = New-Object System.Drawing.Size(390, 30)
 $tabUpdates.Controls.Add($txtGitHubRepository)
-$tabUpdates.Controls.Add((New-Label 'Release ZIP asset filename' 28 154 400))
+$lblUpdateAssetName = New-Label 'Release installer asset filename' 28 154 400
+$tabUpdates.Controls.Add($lblUpdateAssetName)
 $txtUpdateAssetName = New-Object System.Windows.Forms.TextBox
 $txtUpdateAssetName.Location = New-Object System.Drawing.Point(28, 182)
 $txtUpdateAssetName.Size = New-Object System.Drawing.Size(390, 30)
@@ -735,9 +788,191 @@ $lblUpdateStatus.BorderStyle = 'FixedSingle'
 $lblUpdateStatus.BackColor = [System.Drawing.Color]::White
 $lblUpdateStatus.Padding = New-Object System.Windows.Forms.Padding(8)
 $tabUpdates.Controls.Add($lblUpdateStatus)
-$tabUpdates.Controls.Add((New-Label 'GitHub releases must use version tags such as v2.1.0 and include an installer with the exact filename entered above.' 28 438 820 48))
+$lblUpdateReleaseHelp = New-Label 'GitHub releases must use version tags such as v2.1.0 and include an installer with the exact filename entered above.' 28 438 820 48
+$tabUpdates.Controls.Add($lblUpdateReleaseHelp)
+
+function Update-ResponsiveLayout {
+    if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) { return }
+
+    $createWidth = [Math]::Max(520, $tabCreate.ClientSize.Width - 56)
+    $createGroup.Width = $createWidth
+    $innerWidth = [Math]::Max(464, $createWidth - 56)
+
+    if ($tabCreate.ClientSize.Width -ge 820) {
+        $columnGap = 42
+        $columnWidth = [Math]::Floor(($innerWidth - $columnGap) / 2)
+        $rightX = 28 + $columnWidth + $columnGap
+
+        $createGroup.Controls[0].Location = New-Object System.Drawing.Point(28, 42)
+        $cmbCategory.Location = New-Object System.Drawing.Point(28, 68)
+        $cmbCategory.Width = $columnWidth
+        $createGroup.Controls[2].Location = New-Object System.Drawing.Point($rightX, 42)
+        $cmbSubcategory.Location = New-Object System.Drawing.Point($rightX, 68)
+        $cmbSubcategory.Width = $columnWidth
+        $createGroup.Controls[4].Location = New-Object System.Drawing.Point(28, 122)
+        $txtDesignName.Location = New-Object System.Drawing.Point(28, 148)
+        $txtDesignName.Width = $innerWidth
+        $createGroup.Controls[6].Location = New-Object System.Drawing.Point(28, 200)
+        $lblPreview.Location = New-Object System.Drawing.Point(28, 226)
+        $lblPreview.Width = $innerWidth
+        $lblDefaultPath.Location = New-Object System.Drawing.Point(28, 287)
+        $lblDefaultPath.Width = $innerWidth
+
+        $buttonGap = 18
+        $buttonWidth = [Math]::Floor(($innerWidth - ($buttonGap * 2)) / 3)
+        $btnCreateDefault.Location = New-Object System.Drawing.Point(28, 348)
+        $btnCreateDefault.Size = New-Object System.Drawing.Size($buttonWidth, 48)
+        $btnChooseCreate.Location = New-Object System.Drawing.Point((28 + $buttonWidth + $buttonGap), 348)
+        $btnChooseCreate.Size = New-Object System.Drawing.Size($buttonWidth, 48)
+        $btnOpenDefault.Location = New-Object System.Drawing.Point((28 + (($buttonWidth + $buttonGap) * 2)), 348)
+        $btnOpenDefault.Size = New-Object System.Drawing.Size($buttonWidth, 48)
+        $btnManageCategories.Location = New-Object System.Drawing.Point(28, 405)
+        $createGroup.Height = 445
+        $lblHint.Location = New-Object System.Drawing.Point(35, 492)
+    } else {
+        $createGroup.Controls[0].Location = New-Object System.Drawing.Point(28, 36)
+        $cmbCategory.Location = New-Object System.Drawing.Point(28, 62)
+        $cmbCategory.Width = $innerWidth
+        $createGroup.Controls[2].Location = New-Object System.Drawing.Point(28, 105)
+        $cmbSubcategory.Location = New-Object System.Drawing.Point(28, 131)
+        $cmbSubcategory.Width = $innerWidth
+        $createGroup.Controls[4].Location = New-Object System.Drawing.Point(28, 174)
+        $txtDesignName.Location = New-Object System.Drawing.Point(28, 200)
+        $txtDesignName.Width = $innerWidth
+        $createGroup.Controls[6].Location = New-Object System.Drawing.Point(28, 247)
+        $lblPreview.Location = New-Object System.Drawing.Point(28, 273)
+        $lblPreview.Width = $innerWidth
+        $lblDefaultPath.Location = New-Object System.Drawing.Point(28, 329)
+        $lblDefaultPath.Width = $innerWidth
+
+        $buttonGap = 12
+        $buttonWidth = [Math]::Floor(($innerWidth - $buttonGap) / 2)
+        $btnCreateDefault.Location = New-Object System.Drawing.Point(28, 382)
+        $btnCreateDefault.Size = New-Object System.Drawing.Size($buttonWidth, 48)
+        $btnChooseCreate.Location = New-Object System.Drawing.Point((28 + $buttonWidth + $buttonGap), 382)
+        $btnChooseCreate.Size = New-Object System.Drawing.Size($buttonWidth, 48)
+        $btnOpenDefault.Location = New-Object System.Drawing.Point(28, 442)
+        $btnOpenDefault.Size = New-Object System.Drawing.Size($buttonWidth, 44)
+        $btnManageCategories.Location = New-Object System.Drawing.Point((28 + $buttonWidth + $buttonGap), 442)
+        $btnManageCategories.Size = New-Object System.Drawing.Size($buttonWidth, 44)
+        $createGroup.Height = 510
+        $lblHint.Location = New-Object System.Drawing.Point(35, 548)
+    }
+    $lblHint.Width = [Math]::Max(460, $tabCreate.ClientSize.Width - 70)
+
+    $createdButtons.Width = [Math]::Max(450, $tabCreated.ClientSize.Width - 40)
+    $createdButtons.Height = if ($tabCreated.ClientSize.Width -lt 760) { 135 } else { 90 }
+    $createdButtons.Top = [Math]::Max(180, $tabCreated.ClientSize.Height - $createdButtons.Height - 20)
+    $gridCreated.Width = [Math]::Max(450, $tabCreated.ClientSize.Width - 40)
+    $gridCreated.Height = [Math]::Max(120, $createdButtons.Top - 40)
+
+    $settingsWidth = [Math]::Max(520, $settingsTabs.ClientSize.Width - 50)
+    if ($settingsTabs.ClientSize.Width -ge 820) {
+        $catColumnWidth = [Math]::Floor(($settingsWidth - 65) / 2)
+        $catRightX = 25 + $catColumnWidth + 65
+        $lstCategories.Location = New-Object System.Drawing.Point(25, 50)
+        $lstCategories.Size = New-Object System.Drawing.Size($catColumnWidth, 350)
+        $lblSubcategoryHeading.Location = New-Object System.Drawing.Point($catRightX, 22)
+        $lstSubcategories.Location = New-Object System.Drawing.Point($catRightX, 50)
+        $lstSubcategories.Size = New-Object System.Drawing.Size($catColumnWidth, 350)
+        $btnAddCategory.Location = New-Object System.Drawing.Point(25, 420)
+        $btnRenameCategory.Location = New-Object System.Drawing.Point(140, 420)
+        $btnDeleteCategory.Location = New-Object System.Drawing.Point(260, 420)
+        $btnAddSubcategory.Location = New-Object System.Drawing.Point($catRightX, 420)
+        $btnRenameSubcategory.Location = New-Object System.Drawing.Point(($catRightX + 115), 420)
+        $btnDeleteSubcategory.Location = New-Object System.Drawing.Point(($catRightX + 235), 420)
+        $lblCategoryIds.Location = New-Object System.Drawing.Point(25, 474)
+        $tabCat.AutoScrollMinSize = New-Object System.Drawing.Size(0, 530)
+    } else {
+        $listWidth = [Math]::Max(470, $settingsTabs.ClientSize.Width - 70)
+        $lstCategories.Location = New-Object System.Drawing.Point(25, 50)
+        $lstCategories.Size = New-Object System.Drawing.Size($listWidth, 235)
+        $btnAddCategory.Location = New-Object System.Drawing.Point(25, 300)
+        $btnRenameCategory.Location = New-Object System.Drawing.Point(140, 300)
+        $btnDeleteCategory.Location = New-Object System.Drawing.Point(260, 300)
+        $lblSubcategoryHeading.Location = New-Object System.Drawing.Point(25, 355)
+        $lstSubcategories.Location = New-Object System.Drawing.Point(25, 383)
+        $lstSubcategories.Size = New-Object System.Drawing.Size($listWidth, 235)
+        $btnAddSubcategory.Location = New-Object System.Drawing.Point(25, 633)
+        $btnRenameSubcategory.Location = New-Object System.Drawing.Point(140, 633)
+        $btnDeleteSubcategory.Location = New-Object System.Drawing.Point(260, 633)
+        $lblCategoryIds.Location = New-Object System.Drawing.Point(25, 686)
+        $tabCat.AutoScrollMinSize = New-Object System.Drawing.Size(0, 740)
+    }
+
+    if ($settingsTabs.ClientSize.Width -ge 840) {
+        $folderColumnWidth = [Math]::Floor(($settingsWidth - 36) / 2)
+        $folderRightX = 24 + $folderColumnWidth + 36
+        $txtSizes.Location = New-Object System.Drawing.Point(24, 50)
+        $txtSizes.Size = New-Object System.Drawing.Size($folderColumnWidth, 380)
+        $tabFolders.Controls[2].Location = New-Object System.Drawing.Point($folderRightX, 20)
+        $txtTemplate.Location = New-Object System.Drawing.Point($folderRightX, 50)
+        $txtTemplate.Size = New-Object System.Drawing.Size($folderColumnWidth, 380)
+        $tabFolders.Controls[4].Location = New-Object System.Drawing.Point(24, 445)
+        $btnSaveTemplate.Location = New-Object System.Drawing.Point(24, 486)
+        $btnResetTemplate.Location = New-Object System.Drawing.Point(230, 486)
+        $tabFolders.AutoScrollMinSize = New-Object System.Drawing.Size(0, 545)
+    } else {
+        $folderWidth = [Math]::Max(470, $settingsTabs.ClientSize.Width - 70)
+        $txtSizes.Location = New-Object System.Drawing.Point(24, 50)
+        $txtSizes.Size = New-Object System.Drawing.Size($folderWidth, 245)
+        $tabFolders.Controls[2].Location = New-Object System.Drawing.Point(24, 320)
+        $txtTemplate.Location = New-Object System.Drawing.Point(24, 350)
+        $txtTemplate.Size = New-Object System.Drawing.Size($folderWidth, 245)
+        $tabFolders.Controls[4].Location = New-Object System.Drawing.Point(24, 612)
+        $btnSaveTemplate.Location = New-Object System.Drawing.Point(24, 653)
+        $btnResetTemplate.Location = New-Object System.Drawing.Point(230, 653)
+        $tabFolders.AutoScrollMinSize = New-Object System.Drawing.Size(0, 715)
+    }
+
+    $availableSettingsWidth = [Math]::Max(470, $settingsTabs.ClientSize.Width - 70)
+    $txtDefaultDirectory.Width = [Math]::Max(300, $availableSettingsWidth - 137)
+    $btnBrowseDefault.Left = $txtDefaultDirectory.Right + 17
+    $tabLocation.Controls[4].Width = $availableSettingsWidth
+    $lblUpdateStatus.Width = $availableSettingsWidth
+    $lblUpdateReleaseHelp.Width = $availableSettingsWidth
+
+    if ($settingsTabs.ClientSize.Width -ge 820) {
+        $updateColumnWidth = [Math]::Floor(($availableSettingsWidth - 37) / 2)
+        $updateRightX = 28 + $updateColumnWidth + 37
+        $lblGitHubOwner.Location = New-Object System.Drawing.Point(28, 72)
+        $txtGitHubOwner.Location = New-Object System.Drawing.Point(28, 100)
+        $txtGitHubOwner.Width = $updateColumnWidth
+        $lblGitHubRepository.Location = New-Object System.Drawing.Point($updateRightX, 72)
+        $txtGitHubRepository.Location = New-Object System.Drawing.Point($updateRightX, 100)
+        $txtGitHubRepository.Width = $updateColumnWidth
+        $lblUpdateAssetName.Location = New-Object System.Drawing.Point(28, 154)
+        $txtUpdateAssetName.Location = New-Object System.Drawing.Point(28, 182)
+        $txtUpdateAssetName.Width = $updateColumnWidth
+        $chkUpdatesOnLaunch.Location = New-Object System.Drawing.Point(28, 234)
+        $chkUpdatesOnLaunch.Width = $availableSettingsWidth
+        $btnSaveUpdateSettings.Location = New-Object System.Drawing.Point(28, 286)
+        $btnCheckUpdates.Location = New-Object System.Drawing.Point(236, 286)
+        $lblUpdateStatus.Location = New-Object System.Drawing.Point(28, 350)
+        $lblUpdateReleaseHelp.Location = New-Object System.Drawing.Point(28, 438)
+        $tabUpdates.AutoScrollMinSize = New-Object System.Drawing.Size(0, 505)
+    } else {
+        $lblGitHubOwner.Location = New-Object System.Drawing.Point(28, 65)
+        $txtGitHubOwner.Location = New-Object System.Drawing.Point(28, 93)
+        $txtGitHubOwner.Width = $availableSettingsWidth
+        $lblGitHubRepository.Location = New-Object System.Drawing.Point(28, 140)
+        $txtGitHubRepository.Location = New-Object System.Drawing.Point(28, 168)
+        $txtGitHubRepository.Width = $availableSettingsWidth
+        $lblUpdateAssetName.Location = New-Object System.Drawing.Point(28, 215)
+        $txtUpdateAssetName.Location = New-Object System.Drawing.Point(28, 243)
+        $txtUpdateAssetName.Width = $availableSettingsWidth
+        $chkUpdatesOnLaunch.Location = New-Object System.Drawing.Point(28, 290)
+        $chkUpdatesOnLaunch.Width = $availableSettingsWidth
+        $btnSaveUpdateSettings.Location = New-Object System.Drawing.Point(28, 335)
+        $btnCheckUpdates.Location = New-Object System.Drawing.Point(236, 335)
+        $lblUpdateStatus.Location = New-Object System.Drawing.Point(28, 392)
+        $lblUpdateReleaseHelp.Location = New-Object System.Drawing.Point(28, 480)
+        $tabUpdates.AutoScrollMinSize = New-Object System.Drawing.Size(0, 545)
+    }
+}
 
 # EVENTS
+$form.Add_Resize({ Update-ResponsiveLayout })
 $cmbCategory.Add_SelectedIndexChanged({ Update-CreateSubcategories })
 $cmbSubcategory.Add_SelectedIndexChanged({ Update-Preview })
 $txtDesignName.Add_TextChanged({ Update-Preview })
@@ -893,6 +1128,7 @@ $btnRemoveRecord.Add_Click({
     }
 })
 $btnRefreshCreated.Add_Click({ Refresh-CreatedDesigns })
+$btnClearHistoryCache.Add_Click({ Clear-CreatedDesignHistoryAndCache })
 $gridCreated.Add_CellDoubleClick({ $btnOpenDesign.PerformClick() })
 
 $menuCategories.Add_Click({ $tabs.SelectedTab = $tabSettings; $settingsTabs.SelectedTab = $tabCat })
@@ -933,6 +1169,7 @@ $txtUpdateAssetName.Text = [string]$script:Settings.UpdateAssetName
 $chkUpdatesOnLaunch.Checked = [bool]$script:Settings.CheckForUpdatesOnLaunch
 Set-UpdateStatus "Current version: $($script:AppVersion). Enter your GitHub release settings to enable updates."
 Update-Preview
+Update-ResponsiveLayout
 
 $form.Add_Shown({
     if ([bool]$script:Settings.CheckForUpdatesOnLaunch -and ([string]$script:Settings.GitHubOwner).Trim() -and ([string]$script:Settings.GitHubRepository).Trim()) {

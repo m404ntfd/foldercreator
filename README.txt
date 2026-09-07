@@ -1,7 +1,14 @@
 SHIRT DESIGN FOLDER BUILDER
 ===========================
 
-Program version: 2.0.0
+Program version: 2.1.0
+
+WINDOW RESIZING AND WINDOWS SNAP
+- The program can be freely resized like a standard Windows application.
+- Drag the title bar to the left or right edge to snap it to half the screen.
+- You can also press Windows key + Left Arrow or Windows key + Right Arrow.
+- Narrow windows automatically rearrange the Create and Settings screens so
+  controls remain usable. Scroll bars appear when the available height is small.
 
 HOW TO INSTALL
 1. Download ShirtFolderSetup.exe from the latest GitHub release.
@@ -55,6 +62,8 @@ The Created Designs tab records folders made by the program. From there you can:
 - Rename a design while keeping its assigned code.
 - Create any folders missing from the current template.
 - Remove an entry from program history without deleting actual files.
+- Clear all displayed history and leftover app update-cache files. This cleanup
+  never deletes actual design folders, design files, categories, or templates.
 
 RETURNING FROM SETTINGS
 Click "Return to Create Screen" in the blue bar at the bottom of Settings.

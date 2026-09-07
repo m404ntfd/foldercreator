@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "2.0.0"
+  #define AppVersion "2.1.0"
 #endif
 
 #define AppName "J&M Apparel Shirt Design Folder Builder"
@@ -48,4 +48,3 @@ Name: "{autodesktop}\Shirt Design Folder Builder"; Filename: "{app}\{#AppExeName
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch Shirt Design Folder Builder"; Flags: nowait postinstall skipifsilent
-
