@@ -5,14 +5,16 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $script:AppName = 'J&M Apparel Shirt Design Folder Builder'
-$script:AppVersion = [version]'2.1.1'
+$script:AppVersion = [version]'2.2.0'
 $processExecutable = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 $processName = [System.IO.Path]::GetFileNameWithoutExtension($processExecutable)
 $script:ProgramDirectory = if ($processName -in @('powershell', 'powershell_ise', 'pwsh')) { $PSScriptRoot } else { Split-Path -Parent $processExecutable }
 $script:DataDirectory = Join-Path $env:APPDATA 'ShirtDesignFolderBuilder'
 $script:SettingsPath = Join-Path $script:DataDirectory 'settings.json'
 $script:CacheDirectory = Join-Path $script:DataDirectory 'Cache'
+$script:BrandCatalogDirectory = Join-Path $script:DataDirectory 'BrandCatalog'
 $script:Settings = $null
+$script:CreateColorChoices = @()
 
 function New-DefaultSettings {
     return [pscustomobject]@{
@@ -42,6 +44,7 @@ function New-DefaultSettings {
             'Online Images\With People',
             'Original PNG or JPG'
         )
+        BrandCatalog = @()
         CreatedDesigns = @()
     }
 }
@@ -70,6 +73,7 @@ function Load-Settings {
             Ensure-ArrayProperty $loaded 'Categories'
             Ensure-ArrayProperty $loaded 'SizeFolders'
             Ensure-ArrayProperty $loaded 'FolderTemplate'
+            Ensure-ArrayProperty $loaded 'BrandCatalog'
             Ensure-ArrayProperty $loaded 'CreatedDesigns'
             Ensure-SettingProperty $loaded 'GitHubOwner' 'm404ntfd'
             Ensure-SettingProperty $loaded 'GitHubRepository' 'foldercreator'
@@ -79,6 +83,17 @@ function Load-Settings {
             if ([string]::IsNullOrWhiteSpace([string]$loaded.GitHubRepository)) { $loaded.GitHubRepository = 'foldercreator' }
             if ([string]$loaded.UpdateAssetName -eq 'ShirtFolderProgram.zip') { $loaded.UpdateAssetName = 'ShirtFolderSetup.exe' }
             foreach ($category in $loaded.Categories) { Ensure-ArrayProperty $category 'Subcategories' }
+            foreach ($brand in $loaded.BrandCatalog) {
+                Ensure-ArrayProperty $brand 'Colors'
+                if ([string]::IsNullOrWhiteSpace([string]$brand.Id)) {
+                    $brand | Add-Member -NotePropertyName Id -NotePropertyValue ([guid]::NewGuid().ToString('N')) -Force
+                }
+                foreach ($color in $brand.Colors) {
+                    if ([string]::IsNullOrWhiteSpace([string]$color.Id)) {
+                        $color | Add-Member -NotePropertyName Id -NotePropertyValue ([guid]::NewGuid().ToString('N')) -Force
+                    }
+                }
+            }
             return $loaded
         } catch {
             [System.Windows.Forms.MessageBox]::Show(
@@ -295,6 +310,94 @@ function Update-CreateCategories {
     Update-CreateSubcategories
 }
 
+function ConvertTo-SafeFilePart([string]$Name) {
+    $safe = [string]$Name
+    foreach ($character in [System.IO.Path]::GetInvalidFileNameChars()) { $safe = $safe.Replace([string]$character, '_') }
+    $safe = $safe.Trim().TrimEnd('.')
+    if ([string]::IsNullOrWhiteSpace($safe)) { return 'Color' }
+    return $safe
+}
+
+function Get-SelectedBrand {
+    if ($lstBrands.SelectedIndex -lt 0) { return $null }
+    return @($script:Settings.BrandCatalog)[$lstBrands.SelectedIndex]
+}
+
+function Get-SelectedBrandColor {
+    $brand = Get-SelectedBrand
+    if ($null -eq $brand -or $lstBrandColors.SelectedIndex -lt 0) { return $null }
+    return @($brand.Colors)[$lstBrandColors.SelectedIndex]
+}
+
+function Get-CatalogColorPath($Brand, $Color) {
+    return Join-Path (Join-Path $script:BrandCatalogDirectory ([string]$Brand.Id)) ([string]$Color.FileName)
+}
+
+function Refresh-BrandColors {
+    $lstBrandColors.Items.Clear()
+    $brand = Get-SelectedBrand
+    if ($null -ne $brand) {
+        foreach ($color in @($brand.Colors)) {
+            $path = Get-CatalogColorPath $brand $color
+            $status = if (Test-Path -LiteralPath $path -PathType Leaf) { '' } else { ' (file missing)' }
+            [void]$lstBrandColors.Items.Add("$($color.Name)$status")
+        }
+    }
+    if ($lstBrandColors.Items.Count -gt 0) { $lstBrandColors.SelectedIndex = 0 }
+}
+
+function Refresh-BrandCatalog {
+    $selectedBrand = if ($lstBrands.SelectedIndex -ge 0) { Get-SelectedBrand } else { $null }
+    $selectedBrandId = if ($null -ne $selectedBrand) { [string]$selectedBrand.Id } else { '' }
+    $lstBrands.Items.Clear()
+    $selectedIndex = -1
+    for ($index = 0; $index -lt @($script:Settings.BrandCatalog).Count; $index++) {
+        $brand = @($script:Settings.BrandCatalog)[$index]
+        [void]$lstBrands.Items.Add([string]$brand.Name)
+        if ([string]$brand.Id -eq $selectedBrandId) { $selectedIndex = $index }
+    }
+    if ($selectedIndex -ge 0) { $lstBrands.SelectedIndex = $selectedIndex }
+    elseif ($lstBrands.Items.Count -gt 0) { $lstBrands.SelectedIndex = 0 }
+    else { Refresh-BrandColors }
+    Refresh-CreateColorChoices
+}
+
+function Refresh-CreateColorChoices {
+    if ($null -eq $clbDesignColors) { return }
+    $checkedIds = @{}
+    for ($index = 0; $index -lt $script:CreateColorChoices.Count; $index++) {
+        if ($clbDesignColors.GetItemChecked($index)) {
+            $choice = $script:CreateColorChoices[$index]
+            $checkedIds["$($choice.BrandId)|$($choice.ColorId)"] = $true
+        }
+    }
+
+    $script:CreateColorChoices = @()
+    $clbDesignColors.Items.Clear()
+    foreach ($brand in @($script:Settings.BrandCatalog | Sort-Object Name)) {
+        foreach ($color in @($brand.Colors | Sort-Object Name)) {
+            $choice = [pscustomobject]@{
+                BrandId = [string]$brand.Id
+                BrandName = [string]$brand.Name
+                ColorId = [string]$color.Id
+                ColorName = [string]$color.Name
+                FileName = [string]$color.FileName
+            }
+            $script:CreateColorChoices += $choice
+            $newIndex = $clbDesignColors.Items.Add("$($choice.BrandName) — $($choice.ColorName)")
+            if ($checkedIds.ContainsKey("$($choice.BrandId)|$($choice.ColorId)")) { $clbDesignColors.SetItemChecked($newIndex, $true) }
+        }
+    }
+}
+
+function Get-CheckedColorChoices {
+    $selected = @()
+    foreach ($index in @($clbDesignColors.CheckedIndices)) {
+        if ([int]$index -lt $script:CreateColorChoices.Count) { $selected += $script:CreateColorChoices[([int]$index)] }
+    }
+    return @($selected)
+}
+
 function Update-Preview {
     if ($null -eq $lblPreview) { return }
     $category = Get-SelectedCategory
@@ -343,6 +446,25 @@ function Create-DesignFolders([string]$Destination) {
             New-Item -ItemType Directory -Path (Join-Path $masterPath $relativePath) -Force -ErrorAction Stop | Out-Null
         }
 
+        $selectedColors = @(Get-CheckedColorChoices)
+        $colorsCopied = 0
+        $colorsMissing = 0
+        if ($selectedColors.Count -gt 0) {
+            $colorsOfferedPath = Join-Path $masterPath 'Colors Offered'
+            New-Item -ItemType Directory -Path $colorsOfferedPath -Force -ErrorAction Stop | Out-Null
+            foreach ($choice in $selectedColors) {
+                $sourcePath = Join-Path (Join-Path $script:BrandCatalogDirectory ([string]$choice.BrandId)) ([string]$choice.FileName)
+                if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
+                    $extension = [System.IO.Path]::GetExtension($sourcePath)
+                    $destinationName = "$(ConvertTo-SafeFilePart $choice.BrandName) - $(ConvertTo-SafeFilePart $choice.ColorName)$extension"
+                    Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $colorsOfferedPath $destinationName) -Force -ErrorAction Stop
+                    $colorsCopied++
+                } else {
+                    $colorsMissing++
+                }
+            }
+        }
+
         $record = [pscustomobject]@{
             CategoryId = [int]$category.Id
             Category = [string]$category.Name
@@ -351,6 +473,7 @@ function Create-DesignFolders([string]$Destination) {
             DesignNumber = $number
             Name = $name
             Path = $masterPath
+            Colors = @($selectedColors | ForEach-Object { "$($_.BrandName) — $($_.ColorName)" })
             Created = (Get-Date).ToString('s')
         }
         $script:Settings.CreatedDesigns = @($script:Settings.CreatedDesigns) + $record
@@ -359,8 +482,10 @@ function Create-DesignFolders([string]$Destination) {
         $txtDesignName.Clear()
         Update-Preview
 
+        $colorSummary = if ($selectedColors.Count -eq 0) { 'No shirt color files selected.' } else { "Shirt color files copied: $colorsCopied" }
+        if ($colorsMissing -gt 0) { $colorSummary += "`r`nMissing catalog files skipped: $colorsMissing" }
         $answer = [System.Windows.Forms.MessageBox]::Show(
-            "Folder set created successfully:`r`n`r`n$masterPath`r`n`r`nOpen it now?",
+            "Folder set created successfully:`r`n`r`n$masterPath`r`n`r`n$colorSummary`r`n`r`nOpen it now?",
             $script:AppName,
             'YesNo',
             'Information'
@@ -411,7 +536,7 @@ function Refresh-CreatedDesigns {
 
 function Clear-CreatedDesignHistoryAndCache {
     $answer = [System.Windows.Forms.MessageBox]::Show(
-        "Clear the Created Designs list and temporary app cache files?`r`n`r`nYour actual design folders, files, categories, subcategories, and folder template will NOT be deleted.",
+        "Clear the Created Designs list and temporary app cache files?`r`n`r`nYour actual design folders, files, brand/color catalog, categories, subcategories, and folder template will NOT be deleted.",
         $script:AppName,
         'YesNo',
         'Warning'
@@ -519,6 +644,8 @@ $menuSettings = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuSettings.Text = 'Settings'
 $menuCategories = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuCategories.Text = 'Categories && Subcategories'
+$menuBrands = New-Object System.Windows.Forms.ToolStripMenuItem
+$menuBrands.Text = 'Brands && Colors'
 $menuFolderTemplate = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuFolderTemplate.Text = 'Folder Template'
 $menuPresetLocation = New-Object System.Windows.Forms.ToolStripMenuItem
@@ -526,6 +653,7 @@ $menuPresetLocation.Text = 'Preset Location'
 $menuUpdates = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuUpdates.Text = 'Updates'
 [void]$menuSettings.DropDownItems.Add($menuCategories)
+[void]$menuSettings.DropDownItems.Add($menuBrands)
 [void]$menuSettings.DropDownItems.Add($menuFolderTemplate)
 [void]$menuSettings.DropDownItems.Add($menuPresetLocation)
 [void]$menuSettings.DropDownItems.Add($menuUpdates)
@@ -596,6 +724,21 @@ $lblDefaultPath = New-Label '' 28 287 812 42
 $lblDefaultPath.ForeColor = [System.Drawing.Color]::DimGray
 $createGroup.Controls.Add($lblDefaultPath)
 
+$lblDesignColors = New-Label 'Brand colors available for this design' 28 333 500 24
+$createGroup.Controls.Add($lblDesignColors)
+$clbDesignColors = New-Object System.Windows.Forms.CheckedListBox
+$clbDesignColors.CheckOnClick = $true
+$clbDesignColors.Location = New-Object System.Drawing.Point(28, 360)
+$clbDesignColors.Size = New-Object System.Drawing.Size(650, 84)
+$clbDesignColors.IntegralHeight = $false
+$clbDesignColors.BorderStyle = 'FixedSingle'
+$clbDesignColors.BackColor = [System.Drawing.Color]::White
+$createGroup.Controls.Add($clbDesignColors)
+$btnSelectAllColors = New-Button 'Select All' 696 360 144 36
+$btnClearColors = New-Button 'Clear Selections' 696 405 144 36
+$btnClearColors.BackColor = [System.Drawing.Color]::FromArgb(78, 91, 87)
+$createGroup.Controls.AddRange(@($btnSelectAllColors, $btnClearColors))
+
 $btnCreateDefault = New-Button 'Create in Preset Location' 28 348 255 48
 $btnChooseCreate = New-Button 'Choose Location & Create' 302 348 255 48
 $btnOpenDefault = New-Button 'Open Preset Location' 576 348 200 48
@@ -604,7 +747,7 @@ $btnManageCategories = New-Button 'Manage Categories' 28 405 180 30
 $btnManageCategories.BackColor = [System.Drawing.Color]::FromArgb(78, 91, 87)
 
 $createButtonsLayout = New-Object System.Windows.Forms.TableLayoutPanel
-$createButtonsLayout.Location = New-Object System.Drawing.Point(22, 340)
+$createButtonsLayout.Location = New-Object System.Drawing.Point(22, 468)
 $createButtonsLayout.Size = New-Object System.Drawing.Size(824, 108)
 $createButtonsLayout.Anchor = 'Top,Left,Right'
 $createButtonsLayout.ColumnCount = 2
@@ -626,7 +769,7 @@ $createButtonsLayout.Controls.Add($btnOpenDefault, 0, 1)
 $createButtonsLayout.Controls.Add($btnManageCategories, 1, 1)
 $createGroup.Controls.Add($createButtonsLayout)
 
-$lblHint = New-Label 'Tip: Manage categories, sizes, the folder template, and the preset location under Settings.' 35 492 850 32
+$lblHint = New-Label 'Tip: Manage brands, color files, categories, sizes, and locations under Settings.' 35 620 850 32
 $lblHint.ForeColor = [System.Drawing.Color]::DimGray
 $tabCreate.Controls.Add($lblHint)
 
@@ -732,6 +875,37 @@ $btnDeleteSubcategory.BackColor = [System.Drawing.Color]::FromArgb(139, 70, 63)
 $tabCat.Controls.AddRange(@($btnAddCategory, $btnRenameCategory, $btnDeleteCategory, $btnAddSubcategory, $btnRenameSubcategory, $btnDeleteSubcategory))
 $lblCategoryIds = New-Label 'IDs are assigned automatically and remain fixed so existing design codes never change.' 25 474 820 30
 $tabCat.Controls.Add($lblCategoryIds)
+
+$tabBrands = New-Object System.Windows.Forms.TabPage
+$tabBrands.Text = 'Brands & Colors'
+$tabBrands.AutoScroll = $true
+$settingsTabs.TabPages.Add($tabBrands)
+$lblBrandsHeading = New-Label 'Shirt brands' 25 22 360
+$tabBrands.Controls.Add($lblBrandsHeading)
+$lstBrands = New-Object System.Windows.Forms.ListBox
+$lstBrands.Location = New-Object System.Drawing.Point(25, 50)
+$lstBrands.Size = New-Object System.Drawing.Size(375, 350)
+$tabBrands.Controls.Add($lstBrands)
+$lblBrandColorsHeading = New-Label 'Color files for selected brand' 465 22 410
+$tabBrands.Controls.Add($lblBrandColorsHeading)
+$lstBrandColors = New-Object System.Windows.Forms.ListBox
+$lstBrandColors.Location = New-Object System.Drawing.Point(465, 50)
+$lstBrandColors.Size = New-Object System.Drawing.Size(390, 350)
+$tabBrands.Controls.Add($lstBrandColors)
+$btnAddBrand = New-Button 'Add Brand' 25 420 115
+$btnRenameBrand = New-Button 'Rename' 150 420 105
+$btnDeleteBrand = New-Button 'Delete' 265 420 105
+$btnDeleteBrand.BackColor = [System.Drawing.Color]::FromArgb(139, 70, 63)
+$btnUploadColors = New-Button 'Upload Color Files' 465 420 165
+$btnRenameColor = New-Button 'Rename Color' 640 420 135
+$btnReplaceColor = New-Button 'Replace File' 465 464 130
+$btnOpenColor = New-Button 'Open File' 605 464 115
+$btnOpenColor.BackColor = [System.Drawing.Color]::FromArgb(78, 91, 87)
+$btnDeleteColor = New-Button 'Delete Color' 730 464 125
+$btnDeleteColor.BackColor = [System.Drawing.Color]::FromArgb(139, 70, 63)
+$tabBrands.Controls.AddRange(@($btnAddBrand, $btnRenameBrand, $btnDeleteBrand, $btnUploadColors, $btnRenameColor, $btnReplaceColor, $btnOpenColor, $btnDeleteColor))
+$lblBrandCatalogHelp = New-Label 'Uploaded files are stored in the app catalog. Select one or more brand colors on the Create screen to copy them into Colors Offered.' 25 525 830 52
+$tabBrands.Controls.Add($lblBrandCatalogHelp)
 
 $tabFolders = New-Object System.Windows.Forms.TabPage
 $tabFolders.Text = 'Folder Template'
@@ -841,11 +1015,17 @@ function Update-ResponsiveLayout {
         $lblDefaultPath.Location = New-Object System.Drawing.Point(28, 287)
         $lblDefaultPath.Width = $innerWidth
 
-        $createButtonsLayout.Location = New-Object System.Drawing.Point(22, 335)
+        $lblDesignColors.Location = New-Object System.Drawing.Point(28, 329)
+        $clbDesignColors.Location = New-Object System.Drawing.Point(28, 356)
+        $clbDesignColors.Size = New-Object System.Drawing.Size(([Math]::Max(270, $innerWidth - 162)), 84)
+        $btnSelectAllColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 356)
+        $btnClearColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 404)
+
+        $createButtonsLayout.Location = New-Object System.Drawing.Point(22, 456)
         $createButtonsLayout.Width = [Math]::Max(300, $createGroup.ClientSize.Width - 44)
         $createButtonsLayout.Height = 108
-        $createGroup.Height = 465
-        $lblHint.Location = New-Object System.Drawing.Point(35, 512)
+        $createGroup.Height = 586
+        $lblHint.Location = New-Object System.Drawing.Point(35, 625)
     } else {
         $createGroup.Controls[0].Location = New-Object System.Drawing.Point(28, 36)
         $cmbCategory.Location = New-Object System.Drawing.Point(28, 62)
@@ -862,11 +1042,17 @@ function Update-ResponsiveLayout {
         $lblDefaultPath.Location = New-Object System.Drawing.Point(28, 329)
         $lblDefaultPath.Width = $innerWidth
 
-        $createButtonsLayout.Location = New-Object System.Drawing.Point(22, 374)
+        $lblDesignColors.Location = New-Object System.Drawing.Point(28, 374)
+        $clbDesignColors.Location = New-Object System.Drawing.Point(28, 401)
+        $clbDesignColors.Size = New-Object System.Drawing.Size(([Math]::Max(270, $innerWidth - 162)), 84)
+        $btnSelectAllColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 401)
+        $btnClearColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 449)
+
+        $createButtonsLayout.Location = New-Object System.Drawing.Point(22, 501)
         $createButtonsLayout.Width = [Math]::Max(300, $createGroup.ClientSize.Width - 44)
         $createButtonsLayout.Height = 112
-        $createGroup.Height = 508
-        $lblHint.Location = New-Object System.Drawing.Point(35, 546)
+        $createGroup.Height = 631
+        $lblHint.Location = New-Object System.Drawing.Point(35, 670)
     }
     $lblHint.Width = [Math]::Max(460, $tabCreate.ClientSize.Width - 70)
 
@@ -935,6 +1121,45 @@ function Update-ResponsiveLayout {
         $tabFolders.AutoScrollMinSize = New-Object System.Drawing.Size(0, 715)
     }
 
+    if ($settingsTabs.ClientSize.Width -ge 840) {
+        $brandColumnWidth = [Math]::Floor(($settingsWidth - 65) / 2)
+        $brandRightX = 25 + $brandColumnWidth + 65
+        $lstBrands.Location = New-Object System.Drawing.Point(25, 50)
+        $lstBrands.Size = New-Object System.Drawing.Size($brandColumnWidth, 350)
+        $lblBrandColorsHeading.Location = New-Object System.Drawing.Point($brandRightX, 22)
+        $lstBrandColors.Location = New-Object System.Drawing.Point($brandRightX, 50)
+        $lstBrandColors.Size = New-Object System.Drawing.Size($brandColumnWidth, 350)
+        $btnAddBrand.Location = New-Object System.Drawing.Point(25, 420)
+        $btnRenameBrand.Location = New-Object System.Drawing.Point(150, 420)
+        $btnDeleteBrand.Location = New-Object System.Drawing.Point(265, 420)
+        $btnUploadColors.Location = New-Object System.Drawing.Point($brandRightX, 420)
+        $btnRenameColor.Location = New-Object System.Drawing.Point(($brandRightX + 175), 420)
+        $btnReplaceColor.Location = New-Object System.Drawing.Point($brandRightX, 464)
+        $btnOpenColor.Location = New-Object System.Drawing.Point(($brandRightX + 140), 464)
+        $btnDeleteColor.Location = New-Object System.Drawing.Point(($brandRightX + 265), 464)
+        $lblBrandCatalogHelp.Location = New-Object System.Drawing.Point(25, 525)
+        $lblBrandCatalogHelp.Width = [Math]::Max(470, $settingsTabs.ClientSize.Width - 70)
+        $tabBrands.AutoScrollMinSize = New-Object System.Drawing.Size(0, 595)
+    } else {
+        $brandListWidth = [Math]::Max(470, $settingsTabs.ClientSize.Width - 70)
+        $lstBrands.Location = New-Object System.Drawing.Point(25, 50)
+        $lstBrands.Size = New-Object System.Drawing.Size($brandListWidth, 210)
+        $btnAddBrand.Location = New-Object System.Drawing.Point(25, 275)
+        $btnRenameBrand.Location = New-Object System.Drawing.Point(150, 275)
+        $btnDeleteBrand.Location = New-Object System.Drawing.Point(265, 275)
+        $lblBrandColorsHeading.Location = New-Object System.Drawing.Point(25, 330)
+        $lstBrandColors.Location = New-Object System.Drawing.Point(25, 358)
+        $lstBrandColors.Size = New-Object System.Drawing.Size($brandListWidth, 225)
+        $btnUploadColors.Location = New-Object System.Drawing.Point(25, 598)
+        $btnRenameColor.Location = New-Object System.Drawing.Point(200, 598)
+        $btnReplaceColor.Location = New-Object System.Drawing.Point(25, 642)
+        $btnOpenColor.Location = New-Object System.Drawing.Point(165, 642)
+        $btnDeleteColor.Location = New-Object System.Drawing.Point(290, 642)
+        $lblBrandCatalogHelp.Location = New-Object System.Drawing.Point(25, 696)
+        $lblBrandCatalogHelp.Width = $brandListWidth
+        $tabBrands.AutoScrollMinSize = New-Object System.Drawing.Size(0, 770)
+    }
+
     $availableSettingsWidth = [Math]::Max(470, $settingsTabs.ClientSize.Width - 70)
     $txtDefaultDirectory.Width = [Math]::Max(300, $availableSettingsWidth - 137)
     $btnBrowseDefault.Left = $txtDefaultDirectory.Right + 17
@@ -986,6 +1211,12 @@ $form.Add_Resize({ Update-ResponsiveLayout })
 $cmbCategory.Add_SelectedIndexChanged({ Update-CreateSubcategories })
 $cmbSubcategory.Add_SelectedIndexChanged({ Update-Preview })
 $txtDesignName.Add_TextChanged({ Update-Preview })
+$btnSelectAllColors.Add_Click({
+    for ($index = 0; $index -lt $clbDesignColors.Items.Count; $index++) { $clbDesignColors.SetItemChecked($index, $true) }
+})
+$btnClearColors.Add_Click({
+    for ($index = 0; $index -lt $clbDesignColors.Items.Count; $index++) { $clbDesignColors.SetItemChecked($index, $false) }
+})
 
 $btnCreateDefault.Add_Click({ Create-DesignFolders ([string]$script:Settings.DefaultDirectory) })
 $btnChooseCreate.Add_Click({
@@ -998,6 +1229,130 @@ $btnOpenDefault.Add_Click({
     $path = [string]$script:Settings.DefaultDirectory
     if (-not (Test-Path -LiteralPath $path)) { New-Item -ItemType Directory -Path $path -Force | Out-Null }
     Start-Process explorer.exe -ArgumentList @("`"$path`"")
+})
+
+$lstBrands.Add_SelectedIndexChanged({ Refresh-BrandColors })
+$btnAddBrand.Add_Click({
+    $name = [Microsoft.VisualBasic.Interaction]::InputBox('Enter the shirt brand name:', $script:AppName, '').Trim()
+    if (-not $name) { return }
+    if (@($script:Settings.BrandCatalog | Where-Object { [string]$_.Name -ieq $name }).Count -gt 0) {
+        [System.Windows.Forms.MessageBox]::Show('A brand with that name already exists.', $script:AppName, 'OK', 'Warning') | Out-Null
+        return
+    }
+    $brand = [pscustomobject]@{ Id = [guid]::NewGuid().ToString('N'); Name = $name; Colors = @() }
+    $script:Settings.BrandCatalog = @($script:Settings.BrandCatalog) + $brand
+    Save-Settings; Refresh-BrandCatalog
+    $lstBrands.SelectedIndex = $lstBrands.Items.Count - 1
+})
+$btnRenameBrand.Add_Click({
+    $brand = Get-SelectedBrand
+    if ($null -eq $brand) { return }
+    $name = [Microsoft.VisualBasic.Interaction]::InputBox('Enter the shirt brand name:', $script:AppName, [string]$brand.Name).Trim()
+    if (-not $name) { return }
+    if (@($script:Settings.BrandCatalog | Where-Object { $_ -ne $brand -and [string]$_.Name -ieq $name }).Count -gt 0) {
+        [System.Windows.Forms.MessageBox]::Show('A brand with that name already exists.', $script:AppName, 'OK', 'Warning') | Out-Null
+        return
+    }
+    $brand.Name = $name
+    Save-Settings; Refresh-BrandCatalog
+})
+$btnDeleteBrand.Add_Click({
+    $brand = Get-SelectedBrand
+    if ($null -eq $brand) { return }
+    $message = "Delete brand '$($brand.Name)' and all $(@($brand.Colors).Count) color file(s) from the app catalog?`r`n`r`nColor files already copied into existing design folders will not be deleted."
+    if ([System.Windows.Forms.MessageBox]::Show($message, $script:AppName, 'YesNo', 'Warning') -ne 'Yes') { return }
+    try {
+        $brandDirectory = Join-Path $script:BrandCatalogDirectory ([string]$brand.Id)
+        if (Test-Path -LiteralPath $brandDirectory) { Remove-Item -LiteralPath $brandDirectory -Recurse -Force -ErrorAction Stop }
+        $script:Settings.BrandCatalog = @($script:Settings.BrandCatalog | Where-Object { $_ -ne $brand })
+        Save-Settings; Refresh-BrandCatalog
+    } catch { [System.Windows.Forms.MessageBox]::Show("The brand could not be deleted.`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Error') | Out-Null }
+})
+$btnUploadColors.Add_Click({
+    $brand = Get-SelectedBrand
+    if ($null -eq $brand) {
+        [System.Windows.Forms.MessageBox]::Show('Add or select a brand first.', $script:AppName, 'OK', 'Information') | Out-Null
+        return
+    }
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Title = "Choose color files for $($brand.Name)"
+    $dialog.Filter = 'Image files|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff|All files|*.*'
+    $dialog.Multiselect = $true
+    if ($dialog.ShowDialog() -ne 'OK') { return }
+    try {
+        $brandDirectory = Join-Path $script:BrandCatalogDirectory ([string]$brand.Id)
+        New-Item -ItemType Directory -Path $brandDirectory -Force -ErrorAction Stop | Out-Null
+        $added = 0
+        $skipped = 0
+        foreach ($sourcePath in @($dialog.FileNames)) {
+            $colorName = [System.IO.Path]::GetFileNameWithoutExtension($sourcePath).Trim()
+            if (-not $colorName -or @($brand.Colors | Where-Object { [string]$_.Name -ieq $colorName }).Count -gt 0) { $skipped++; continue }
+            $colorId = [guid]::NewGuid().ToString('N')
+            $extension = [System.IO.Path]::GetExtension($sourcePath).ToLowerInvariant()
+            $fileName = "$colorId$extension"
+            Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $brandDirectory $fileName) -ErrorAction Stop
+            $brand.Colors = @($brand.Colors) + [pscustomobject]@{ Id = $colorId; Name = $colorName; FileName = $fileName }
+            $added++
+        }
+        Save-Settings; Refresh-BrandColors; Refresh-CreateColorChoices
+        $summary = "$added color file(s) added to $($brand.Name)."
+        if ($skipped -gt 0) { $summary += "`r`n$skipped duplicate or unnamed file(s) skipped." }
+        [System.Windows.Forms.MessageBox]::Show($summary, $script:AppName, 'OK', 'Information') | Out-Null
+    } catch { [System.Windows.Forms.MessageBox]::Show("The color files could not be added.`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Error') | Out-Null }
+})
+$btnRenameColor.Add_Click({
+    $brand = Get-SelectedBrand
+    $color = Get-SelectedBrandColor
+    if ($null -eq $brand -or $null -eq $color) { return }
+    $name = [Microsoft.VisualBasic.Interaction]::InputBox('Enter the color name:', $script:AppName, [string]$color.Name).Trim()
+    if (-not $name) { return }
+    if (@($brand.Colors | Where-Object { $_ -ne $color -and [string]$_.Name -ieq $name }).Count -gt 0) {
+        [System.Windows.Forms.MessageBox]::Show('That brand already has a color with this name.', $script:AppName, 'OK', 'Warning') | Out-Null
+        return
+    }
+    $color.Name = $name
+    Save-Settings; Refresh-BrandColors; Refresh-CreateColorChoices
+})
+$btnReplaceColor.Add_Click({
+    $brand = Get-SelectedBrand
+    $color = Get-SelectedBrandColor
+    if ($null -eq $brand -or $null -eq $color) { return }
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Title = "Choose the replacement file for $($brand.Name) — $($color.Name)"
+    $dialog.Filter = 'Image files|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff|All files|*.*'
+    if ($dialog.ShowDialog() -ne 'OK') { return }
+    try {
+        $brandDirectory = Join-Path $script:BrandCatalogDirectory ([string]$brand.Id)
+        New-Item -ItemType Directory -Path $brandDirectory -Force -ErrorAction Stop | Out-Null
+        $oldPath = Get-CatalogColorPath $brand $color
+        $extension = [System.IO.Path]::GetExtension($dialog.FileName).ToLowerInvariant()
+        $newFileName = "$($color.Id)$extension"
+        $newPath = Join-Path $brandDirectory $newFileName
+        Copy-Item -LiteralPath $dialog.FileName -Destination $newPath -Force -ErrorAction Stop
+        if ($oldPath -ne $newPath -and (Test-Path -LiteralPath $oldPath)) { Remove-Item -LiteralPath $oldPath -Force -ErrorAction SilentlyContinue }
+        $color.FileName = $newFileName
+        Save-Settings; Refresh-BrandColors; Refresh-CreateColorChoices
+    } catch { [System.Windows.Forms.MessageBox]::Show("The color file could not be replaced.`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Error') | Out-Null }
+})
+$btnOpenColor.Add_Click({
+    $brand = Get-SelectedBrand
+    $color = Get-SelectedBrandColor
+    if ($null -eq $brand -or $null -eq $color) { return }
+    $path = Get-CatalogColorPath $brand $color
+    if (Test-Path -LiteralPath $path -PathType Leaf) { Start-Process -FilePath $path }
+    else { [System.Windows.Forms.MessageBox]::Show('The stored color file is missing. Use Replace File to restore it.', $script:AppName, 'OK', 'Warning') | Out-Null }
+})
+$btnDeleteColor.Add_Click({
+    $brand = Get-SelectedBrand
+    $color = Get-SelectedBrandColor
+    if ($null -eq $brand -or $null -eq $color) { return }
+    if ([System.Windows.Forms.MessageBox]::Show("Delete '$($color.Name)' from $($brand.Name)? Existing design folders will not be changed.", $script:AppName, 'YesNo', 'Warning') -ne 'Yes') { return }
+    try {
+        $path = Get-CatalogColorPath $brand $color
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
+        $brand.Colors = @($brand.Colors | Where-Object { $_ -ne $color })
+        Save-Settings; Refresh-BrandColors; Refresh-CreateColorChoices
+    } catch { [System.Windows.Forms.MessageBox]::Show("The color could not be deleted.`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Error') | Out-Null }
 })
 
 $lstCategories.Add_SelectedIndexChanged({ Refresh-SettingsSubcategories })
@@ -1142,6 +1497,7 @@ $btnClearHistoryCache.Add_Click({ Clear-CreatedDesignHistoryAndCache })
 $gridCreated.Add_CellDoubleClick({ $btnOpenDesign.PerformClick() })
 
 $menuCategories.Add_Click({ $tabs.SelectedTab = $tabSettings; $settingsTabs.SelectedTab = $tabCat })
+$menuBrands.Add_Click({ $tabs.SelectedTab = $tabSettings; $settingsTabs.SelectedTab = $tabBrands })
 $menuFolderTemplate.Add_Click({ $tabs.SelectedTab = $tabSettings; $settingsTabs.SelectedTab = $tabFolders })
 $menuPresetLocation.Add_Click({ $tabs.SelectedTab = $tabSettings; $settingsTabs.SelectedTab = $tabLocation })
 $menuUpdates.Add_Click({ $tabs.SelectedTab = $tabSettings; $settingsTabs.SelectedTab = $tabUpdates })
@@ -1170,6 +1526,7 @@ $btnCheckUpdates.Add_Click({
 
 Add-Type -AssemblyName Microsoft.VisualBasic
 Refresh-SettingsLists
+Refresh-BrandCatalog
 Update-CreateCategories
 Refresh-CreatedDesigns
 $lblDefaultPath.Text = "Preset location: $($script:Settings.DefaultDirectory)"

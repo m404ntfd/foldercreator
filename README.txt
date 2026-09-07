@@ -1,7 +1,7 @@
 SHIRT DESIGN FOLDER BUILDER
 ===========================
 
-Program version: 2.1.1
+Program version: 2.2.0
 
 WINDOW RESIZING AND WINDOWS SNAP
 - The program can be freely resized like a standard Windows application.
@@ -29,12 +29,25 @@ FIRST-TIME SETUP
 3. Select each category and add its subcategories.
 4. Open Settings > Preset Location and choose the main directory where design
    folders should normally be created.
+5. Open Settings > Brands & Colors, add each shirt brand, and upload its color
+   image files. The file name is used as the initial color name.
+
+BRAND AND COLOR CATALOG
+- Each brand can contain any number of color image files.
+- Add, rename, and delete brands; upload, rename, replace, open, and delete colors.
+- Uploaded catalog files are kept in AppData and survive program updates.
+- Deleting catalog content does not remove files already copied to design folders.
+- Clearing Created Designs history and cache does not remove the catalog.
 
 CREATING A DESIGN
 1. Select a category and subcategory.
 2. Enter the design name.
-3. Click "Create in Preset Location", or click "Choose Location & Create" for
+3. Check every brand/color combination that will be offered for the shirt.
+4. Click "Create in Preset Location", or click "Choose Location & Create" for
    a one-time alternate destination.
+
+The selected catalog files are copied into the new design's Colors Offered
+folder and named "Brand - Color" while retaining their original file type.
 
 NUMBERING
 - AA is the category ID.
@@ -81,6 +94,10 @@ SETTINGS LOCATION
 The program stores its settings and creation history in:
 %APPDATA%\ShirtDesignFolderBuilder\settings.json
 
+Uploaded shirt color files are stored in:
+%APPDATA%\ShirtDesignFolderBuilder\BrandCatalog
+
 BACKUP TIP
-Include that settings.json file in normal computer backups. It contains the
-category numbers and design-number history.
+Include settings.json and the BrandCatalog folder in normal computer backups.
+Together they contain category numbers, design-number history, brand/color
+names, and uploaded catalog files.
