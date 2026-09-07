@@ -5,7 +5,7 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $script:AppName = 'J&M Apparel Shirt Design Folder Builder'
-$script:AppVersion = [version]'2.1.0'
+$script:AppVersion = [version]'2.1.1'
 $processExecutable = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 $processName = [System.IO.Path]::GetFileNameWithoutExtension($processExecutable)
 $script:ProgramDirectory = if ($processName -in @('powershell', 'powershell_ise', 'pwsh')) { $PSScriptRoot } else { Split-Path -Parent $processExecutable }
@@ -459,6 +459,8 @@ function New-Button([string]$Text, [int]$X, [int]$Y, [int]$Width = 130, [int]$He
     $button.Location = New-Object System.Drawing.Point($X, $Y)
     $button.Size = New-Object System.Drawing.Size($Width, $Height)
     $button.FlatStyle = 'Flat'
+    $button.UseMnemonic = $false
+    $button.AutoEllipsis = $true
     $button.BackColor = [System.Drawing.Color]::FromArgb(36, 99, 166)
     $button.ForeColor = [System.Drawing.Color]::White
     $button.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
@@ -598,10 +600,31 @@ $btnCreateDefault = New-Button 'Create in Preset Location' 28 348 255 48
 $btnChooseCreate = New-Button 'Choose Location & Create' 302 348 255 48
 $btnOpenDefault = New-Button 'Open Preset Location' 576 348 200 48
 $btnOpenDefault.BackColor = [System.Drawing.Color]::FromArgb(78, 91, 87)
-$createGroup.Controls.AddRange(@($btnCreateDefault, $btnChooseCreate, $btnOpenDefault))
 $btnManageCategories = New-Button 'Manage Categories' 28 405 180 30
 $btnManageCategories.BackColor = [System.Drawing.Color]::FromArgb(78, 91, 87)
-$createGroup.Controls.Add($btnManageCategories)
+
+$createButtonsLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$createButtonsLayout.Location = New-Object System.Drawing.Point(22, 340)
+$createButtonsLayout.Size = New-Object System.Drawing.Size(824, 108)
+$createButtonsLayout.Anchor = 'Top,Left,Right'
+$createButtonsLayout.ColumnCount = 2
+$createButtonsLayout.RowCount = 2
+$createButtonsLayout.Margin = New-Object System.Windows.Forms.Padding(0)
+$createButtonsLayout.Padding = New-Object System.Windows.Forms.Padding(0)
+$createButtonsLayout.GrowStyle = [System.Windows.Forms.TableLayoutPanelGrowStyle]::FixedSize
+[void]$createButtonsLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+[void]$createButtonsLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+[void]$createButtonsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+[void]$createButtonsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+foreach ($button in @($btnCreateDefault, $btnChooseCreate, $btnOpenDefault, $btnManageCategories)) {
+    $button.Dock = 'Fill'
+    $button.Margin = New-Object System.Windows.Forms.Padding(6)
+}
+$createButtonsLayout.Controls.Add($btnCreateDefault, 0, 0)
+$createButtonsLayout.Controls.Add($btnChooseCreate, 1, 0)
+$createButtonsLayout.Controls.Add($btnOpenDefault, 0, 1)
+$createButtonsLayout.Controls.Add($btnManageCategories, 1, 1)
+$createGroup.Controls.Add($createButtonsLayout)
 
 $lblHint = New-Label 'Tip: Manage categories, sizes, the folder template, and the preset location under Settings.' 35 492 850 32
 $lblHint.ForeColor = [System.Drawing.Color]::DimGray
@@ -650,7 +673,7 @@ $btnRemoveRecord = New-Button 'Remove From List' 0 0 160 38
 $btnRemoveRecord.BackColor = [System.Drawing.Color]::FromArgb(139, 70, 63)
 $btnRefreshCreated = New-Button 'Refresh' 0 0 110 38
 $btnRefreshCreated.BackColor = [System.Drawing.Color]::FromArgb(78, 91, 87)
-$btnClearHistoryCache = New-Button 'Clear History && Cache' 0 0 190 38
+$btnClearHistoryCache = New-Button 'Clear History & Cache' 0 0 190 38
 $btnClearHistoryCache.BackColor = [System.Drawing.Color]::FromArgb(139, 70, 63)
 $createdButtons.Controls.AddRange(@($btnOpenDesign, $btnRenameDesign, $btnRepairDesign, $btnRemoveRecord, $btnRefreshCreated, $btnClearHistoryCache))
 
@@ -818,17 +841,11 @@ function Update-ResponsiveLayout {
         $lblDefaultPath.Location = New-Object System.Drawing.Point(28, 287)
         $lblDefaultPath.Width = $innerWidth
 
-        $buttonGap = 18
-        $buttonWidth = [Math]::Floor(($innerWidth - ($buttonGap * 2)) / 3)
-        $btnCreateDefault.Location = New-Object System.Drawing.Point(28, 348)
-        $btnCreateDefault.Size = New-Object System.Drawing.Size($buttonWidth, 48)
-        $btnChooseCreate.Location = New-Object System.Drawing.Point((28 + $buttonWidth + $buttonGap), 348)
-        $btnChooseCreate.Size = New-Object System.Drawing.Size($buttonWidth, 48)
-        $btnOpenDefault.Location = New-Object System.Drawing.Point((28 + (($buttonWidth + $buttonGap) * 2)), 348)
-        $btnOpenDefault.Size = New-Object System.Drawing.Size($buttonWidth, 48)
-        $btnManageCategories.Location = New-Object System.Drawing.Point(28, 405)
-        $createGroup.Height = 445
-        $lblHint.Location = New-Object System.Drawing.Point(35, 492)
+        $createButtonsLayout.Location = New-Object System.Drawing.Point(22, 335)
+        $createButtonsLayout.Width = [Math]::Max(300, $createGroup.ClientSize.Width - 44)
+        $createButtonsLayout.Height = 108
+        $createGroup.Height = 465
+        $lblHint.Location = New-Object System.Drawing.Point(35, 512)
     } else {
         $createGroup.Controls[0].Location = New-Object System.Drawing.Point(28, 36)
         $cmbCategory.Location = New-Object System.Drawing.Point(28, 62)
@@ -845,18 +862,11 @@ function Update-ResponsiveLayout {
         $lblDefaultPath.Location = New-Object System.Drawing.Point(28, 329)
         $lblDefaultPath.Width = $innerWidth
 
-        $buttonGap = 12
-        $buttonWidth = [Math]::Floor(($innerWidth - $buttonGap) / 2)
-        $btnCreateDefault.Location = New-Object System.Drawing.Point(28, 382)
-        $btnCreateDefault.Size = New-Object System.Drawing.Size($buttonWidth, 48)
-        $btnChooseCreate.Location = New-Object System.Drawing.Point((28 + $buttonWidth + $buttonGap), 382)
-        $btnChooseCreate.Size = New-Object System.Drawing.Size($buttonWidth, 48)
-        $btnOpenDefault.Location = New-Object System.Drawing.Point(28, 442)
-        $btnOpenDefault.Size = New-Object System.Drawing.Size($buttonWidth, 44)
-        $btnManageCategories.Location = New-Object System.Drawing.Point((28 + $buttonWidth + $buttonGap), 442)
-        $btnManageCategories.Size = New-Object System.Drawing.Size($buttonWidth, 44)
-        $createGroup.Height = 510
-        $lblHint.Location = New-Object System.Drawing.Point(35, 548)
+        $createButtonsLayout.Location = New-Object System.Drawing.Point(22, 374)
+        $createButtonsLayout.Width = [Math]::Max(300, $createGroup.ClientSize.Width - 44)
+        $createButtonsLayout.Height = 112
+        $createGroup.Height = 508
+        $lblHint.Location = New-Object System.Drawing.Point(35, 546)
     }
     $lblHint.Width = [Math]::Max(460, $tabCreate.ClientSize.Width - 70)
 

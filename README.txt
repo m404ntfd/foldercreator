@@ -1,7 +1,7 @@
 SHIRT DESIGN FOLDER BUILDER
 ===========================
 
-Program version: 2.1.0
+Program version: 2.1.1
 
 WINDOW RESIZING AND WINDOWS SNAP
 - The program can be freely resized like a standard Windows application.
@@ -9,6 +9,8 @@ WINDOW RESIZING AND WINDOWS SNAP
 - You can also press Windows key + Left Arrow or Windows key + Right Arrow.
 - Narrow windows automatically rearrange the Create and Settings screens so
   controls remain usable. Scroll bars appear when the available height is small.
+- The four Create-screen action buttons use a responsive two-by-two grid so
+  every button stays inside its panel and resizes with a snapped window.
 
 HOW TO INSTALL
 1. Download ShirtFolderSetup.exe from the latest GitHub release.
