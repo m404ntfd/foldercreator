@@ -5,7 +5,7 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $script:AppName = 'J&M Apparel Shirt Design Folder Builder'
-$script:AppVersion = [version]'2.2.1'
+$script:AppVersion = [version]'2.3.0'
 $processExecutable = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 $processName = [System.IO.Path]::GetFileNameWithoutExtension($processExecutable)
 $script:ProgramDirectory = if ($processName -in @('powershell', 'powershell_ise', 'pwsh')) { $PSScriptRoot } else { Split-Path -Parent $processExecutable }
@@ -331,6 +331,47 @@ function Get-SelectedBrandColor {
 
 function Get-CatalogColorPath($Brand, $Color) {
     return Join-Path (Join-Path $script:BrandCatalogDirectory ([string]$Brand.Id)) ([string]$Color.FileName)
+}
+
+function Add-ColorFilesToBrand($Brand, [string[]]$SourcePaths) {
+    if ($null -eq $Brand) {
+        [System.Windows.Forms.MessageBox]::Show('Add or select a brand first.', $script:AppName, 'OK', 'Information') | Out-Null
+        return
+    }
+
+    $files = @($SourcePaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+    if ($files.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show('No files were found in that selection.', $script:AppName, 'OK', 'Warning') | Out-Null
+        return
+    }
+
+    try {
+        $brandDirectory = Join-Path $script:BrandCatalogDirectory ([string]$Brand.Id)
+        New-Item -ItemType Directory -Path $brandDirectory -Force -ErrorAction Stop | Out-Null
+        $added = 0
+        $skipped = 0
+        foreach ($sourcePath in $files) {
+            $colorName = [System.IO.Path]::GetFileNameWithoutExtension($sourcePath).Trim()
+            if (-not $colorName -or @($Brand.Colors | Where-Object { [string]$_.Name -ieq $colorName }).Count -gt 0) {
+                $skipped++
+                continue
+            }
+            $colorId = [guid]::NewGuid().ToString('N')
+            $extension = [System.IO.Path]::GetExtension($sourcePath).ToLowerInvariant()
+            $fileName = "$colorId$extension"
+            Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $brandDirectory $fileName) -ErrorAction Stop
+            $Brand.Colors = @($Brand.Colors) + [pscustomobject]@{ Id = $colorId; Name = $colorName; FileName = $fileName }
+            $added++
+        }
+        if ($added -gt 0) { Save-Settings }
+        Refresh-BrandColors
+        Refresh-CreateColorChoices
+        $summary = "$added color file(s) added to $($Brand.Name)."
+        if ($skipped -gt 0) { $summary += "`r`n$skipped duplicate or unnamed file(s) skipped." }
+        [System.Windows.Forms.MessageBox]::Show($summary, $script:AppName, 'OK', 'Information') | Out-Null
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("The color files could not be added.`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Error') | Out-Null
+    }
 }
 
 function Refresh-BrandColors {
@@ -897,13 +938,21 @@ $btnRenameBrand = New-Button 'Rename' 150 420 105
 $btnDeleteBrand = New-Button 'Delete' 265 420 105
 $btnDeleteBrand.BackColor = [System.Drawing.Color]::FromArgb(139, 70, 63)
 $btnUploadColors = New-Button 'Upload Color Files for Selected Brand' 465 50 270 38
+$lblColorDrop = New-Label "DRAG && DROP COLOR FILES HERE`r`nFiles will be added to the selected brand" 465 100 390 64
+$lblColorDrop.BorderStyle = 'FixedSingle'
+$lblColorDrop.BackColor = [System.Drawing.Color]::FromArgb(226, 236, 247)
+$lblColorDrop.ForeColor = [System.Drawing.Color]::FromArgb(24, 62, 105)
+$lblColorDrop.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+$lblColorDrop.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+$lblColorDrop.AllowDrop = $true
+$lstBrandColors.AllowDrop = $true
 $btnRenameColor = New-Button 'Rename Color' 640 420 135
 $btnReplaceColor = New-Button 'Replace File' 465 464 130
 $btnOpenColor = New-Button 'Open File' 605 464 115
 $btnOpenColor.BackColor = [System.Drawing.Color]::FromArgb(78, 91, 87)
 $btnDeleteColor = New-Button 'Delete Color' 730 464 125
 $btnDeleteColor.BackColor = [System.Drawing.Color]::FromArgb(139, 70, 63)
-$tabBrands.Controls.AddRange(@($btnAddBrand, $btnRenameBrand, $btnDeleteBrand, $btnUploadColors, $btnRenameColor, $btnReplaceColor, $btnOpenColor, $btnDeleteColor))
+$tabBrands.Controls.AddRange(@($btnAddBrand, $btnRenameBrand, $btnDeleteBrand, $btnUploadColors, $lblColorDrop, $btnRenameColor, $btnReplaceColor, $btnOpenColor, $btnDeleteColor))
 $lblBrandCatalogHelp = New-Label 'Uploaded files are stored in the app catalog. Select one or more brand colors on the Create screen to copy them into Colors Offered.' 25 525 830 52
 $tabBrands.Controls.Add($lblBrandCatalogHelp)
 
@@ -1129,8 +1178,10 @@ function Update-ResponsiveLayout {
         $lblBrandColorsHeading.Location = New-Object System.Drawing.Point($brandRightX, 22)
         $btnUploadColors.Location = New-Object System.Drawing.Point($brandRightX, 50)
         $btnUploadColors.Width = [Math]::Min(270, $brandColumnWidth)
-        $lstBrandColors.Location = New-Object System.Drawing.Point($brandRightX, 100)
-        $lstBrandColors.Size = New-Object System.Drawing.Size($brandColumnWidth, 300)
+        $lblColorDrop.Location = New-Object System.Drawing.Point($brandRightX, 100)
+        $lblColorDrop.Size = New-Object System.Drawing.Size($brandColumnWidth, 64)
+        $lstBrandColors.Location = New-Object System.Drawing.Point($brandRightX, 176)
+        $lstBrandColors.Size = New-Object System.Drawing.Size($brandColumnWidth, 224)
         $btnAddBrand.Location = New-Object System.Drawing.Point(25, 420)
         $btnRenameBrand.Location = New-Object System.Drawing.Point(150, 420)
         $btnDeleteBrand.Location = New-Object System.Drawing.Point(265, 420)
@@ -1151,8 +1202,10 @@ function Update-ResponsiveLayout {
         $lblBrandColorsHeading.Location = New-Object System.Drawing.Point(25, 300)
         $btnUploadColors.Location = New-Object System.Drawing.Point(25, 328)
         $btnUploadColors.Width = [Math]::Min(270, $brandListWidth)
-        $lstBrandColors.Location = New-Object System.Drawing.Point(25, 378)
-        $lstBrandColors.Size = New-Object System.Drawing.Size($brandListWidth, 180)
+        $lblColorDrop.Location = New-Object System.Drawing.Point(25, 378)
+        $lblColorDrop.Size = New-Object System.Drawing.Size($brandListWidth, 64)
+        $lstBrandColors.Location = New-Object System.Drawing.Point(25, 454)
+        $lstBrandColors.Size = New-Object System.Drawing.Size($brandListWidth, 104)
         $btnRenameColor.Location = New-Object System.Drawing.Point(25, 573)
         $btnReplaceColor.Location = New-Object System.Drawing.Point(170, 573)
         $btnOpenColor.Location = New-Object System.Drawing.Point(310, 573)
@@ -1284,27 +1337,34 @@ $btnUploadColors.Add_Click({
     $dialog.Filter = 'Image files|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff|All files|*.*'
     $dialog.Multiselect = $true
     if ($dialog.ShowDialog() -ne 'OK') { return }
-    try {
-        $brandDirectory = Join-Path $script:BrandCatalogDirectory ([string]$brand.Id)
-        New-Item -ItemType Directory -Path $brandDirectory -Force -ErrorAction Stop | Out-Null
-        $added = 0
-        $skipped = 0
-        foreach ($sourcePath in @($dialog.FileNames)) {
-            $colorName = [System.IO.Path]::GetFileNameWithoutExtension($sourcePath).Trim()
-            if (-not $colorName -or @($brand.Colors | Where-Object { [string]$_.Name -ieq $colorName }).Count -gt 0) { $skipped++; continue }
-            $colorId = [guid]::NewGuid().ToString('N')
-            $extension = [System.IO.Path]::GetExtension($sourcePath).ToLowerInvariant()
-            $fileName = "$colorId$extension"
-            Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $brandDirectory $fileName) -ErrorAction Stop
-            $brand.Colors = @($brand.Colors) + [pscustomobject]@{ Id = $colorId; Name = $colorName; FileName = $fileName }
-            $added++
-        }
-        Save-Settings; Refresh-BrandColors; Refresh-CreateColorChoices
-        $summary = "$added color file(s) added to $($brand.Name)."
-        if ($skipped -gt 0) { $summary += "`r`n$skipped duplicate or unnamed file(s) skipped." }
-        [System.Windows.Forms.MessageBox]::Show($summary, $script:AppName, 'OK', 'Information') | Out-Null
-    } catch { [System.Windows.Forms.MessageBox]::Show("The color files could not be added.`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Error') | Out-Null }
+    Add-ColorFilesToBrand $brand @($dialog.FileNames)
 })
+$handleColorDragEnter = {
+    if ($null -ne (Get-SelectedBrand) -and $_.Data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)) {
+        $_.Effect = [System.Windows.Forms.DragDropEffects]::Copy
+        $lblColorDrop.BackColor = [System.Drawing.Color]::FromArgb(198, 221, 245)
+    } else {
+        $_.Effect = [System.Windows.Forms.DragDropEffects]::None
+    }
+}
+$handleColorDragLeave = { $lblColorDrop.BackColor = [System.Drawing.Color]::FromArgb(226, 236, 247) }
+$handleColorDragDrop = {
+    $lblColorDrop.BackColor = [System.Drawing.Color]::FromArgb(226, 236, 247)
+    if (-not $_.Data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)) { return }
+    $brand = Get-SelectedBrand
+    if ($null -eq $brand) {
+        [System.Windows.Forms.MessageBox]::Show('Add or select a brand before dropping color files.', $script:AppName, 'OK', 'Information') | Out-Null
+        return
+    }
+    $paths = [string[]]$_.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop)
+    Add-ColorFilesToBrand $brand $paths
+}
+foreach ($dropTarget in @($lblColorDrop, $lstBrandColors)) {
+    $dropTarget.Add_DragEnter($handleColorDragEnter)
+    $dropTarget.Add_DragLeave($handleColorDragLeave)
+    $dropTarget.Add_DragDrop($handleColorDragDrop)
+}
+$lblColorDrop.Add_Click({ $btnUploadColors.PerformClick() })
 $btnRenameColor.Add_Click({
     $brand = Get-SelectedBrand
     $color = Get-SelectedBrandColor
