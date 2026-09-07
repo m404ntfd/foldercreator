@@ -1,0 +1,56 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build, such as 2.0.0
+        required: true
+        default: 2.0.0
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            $version = '${{ github.ref_name }}'.TrimStart('v')
+          } else {
+            $version = '${{ inputs.version }}'
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build application and installer
+        shell: pwsh
+        run: ./Build-Installer.ps1 -Version '${{ steps.version.outputs.version }}'
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShirtFolderSetup-${{ steps.version.outputs.version }}
+          path: dist/ShirtFolderSetup.exe
+
+      - name: Attach installer to GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: J&M Apparel Shirt Design Folder Builder v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: dist/ShirtFolderSetup.exe
+
