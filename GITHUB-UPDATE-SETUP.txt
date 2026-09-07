@@ -8,7 +8,7 @@ in %APPDATA% and are preserved when the program updates.
 CONFIGURED REPOSITORY
 GitHub owner: m404ntfd
 Repository: foldercreator
-Release asset filename: ShirtFolderProgram.zip
+Release asset filename: ShirtFolderSetup.exe
 
 INITIAL GITHUB RELEASE
 1. The repository must be Public for the built-in updater. It does not store a
@@ -16,8 +16,8 @@ INITIAL GITHUB RELEASE
 2. You may upload the source folder to the repository for safekeeping, but the
    updater specifically reads the repository's Releases section.
 3. On GitHub, choose Releases > Draft a new release.
-4. For this version, create the tag v1.2.1.
-5. Attach the supplied ShirtFolderProgram.zip file as the release asset.
+4. For this version, create the tag v2.0.0.
+5. Attach the supplied ShirtFolderSetup.exe file as the release asset.
 6. Publish the release.
 
 PROGRAM SETUP
@@ -25,19 +25,19 @@ PROGRAM SETUP
 2. Choose Settings > Updates.
 3. Confirm the owner is m404ntfd.
 4. Confirm the repository is foldercreator.
-5. Confirm the asset filename is ShirtFolderProgram.zip.
+5. Confirm the asset filename is ShirtFolderSetup.exe.
 6. Leave "Check for updates automatically" selected.
 7. Click Save Update Settings.
 8. Click Check for Updates Now to test the connection.
 
 PUBLISHING A FUTURE UPDATE
 1. The program version inside ShirtDesignFolderBuilder.ps1 must be increased.
-   Example: change 1.2.1 to 1.3.0. When ChatGPT prepares the next update for
+   Example: change 2.0.0 to 2.1.0. When ChatGPT prepares the next update for
    you, it can make this change.
-2. Put the updated files inside the ShirtDesignFolderBuilder folder.
-3. ZIP that folder and name the ZIP ShirtFolderProgram.zip.
-4. Create a new GitHub release using the matching version tag, such as v1.3.0.
-5. Attach ShirtFolderProgram.zip and publish the release.
+2. Commit the updated files to GitHub.
+3. Create and push a matching version tag, such as v2.1.0.
+4. The included GitHub Actions workflow builds ShirtFolderSetup.exe and attaches
+   it to the release automatically.
 
 HOW UPDATES WORK
 - At launch, the app compares its installed version to GitHub's latest release
@@ -53,6 +53,6 @@ TROUBLESHOOTING
   repository is Public.
 - "No asset": attach the ZIP to the release and make its filename exactly match
   the Update Settings value.
-- "Tag is not a version": use a tag such as v1.3.0.
+- "Tag is not a version": use a tag such as v2.1.0.
 - A firewall or internet outage can prevent the check. Folder creation still
   works normally, and automatic update errors do not close the program.

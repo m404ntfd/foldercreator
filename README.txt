@@ -1,12 +1,17 @@
 SHIRT DESIGN FOLDER BUILDER
 ===========================
 
-Program version: 1.2.1
+Program version: 2.0.0
 
-HOW TO START
-1. Keep the files in this folder together.
-2. Double-click "Launch Shirt Design Folder Builder.bat".
-3. If Windows asks whether PowerShell may run, allow it.
+HOW TO INSTALL
+1. Download ShirtFolderSetup.exe from the latest GitHub release.
+2. Double-click the installer and approve the Windows administrator prompt.
+3. Keep "Create a desktop shortcut" selected.
+4. Complete setup and launch the program from the desktop or Start menu.
+
+The installed application appears in Windows Settings > Apps > Installed apps
+and can be uninstalled normally. The included .bat file is only for developers
+who want to run the source version without installing it.
 
 FIRST-TIME SETUP
 1. Open the Settings menu > Categories & Subcategories, or click the Manage
@@ -56,10 +61,10 @@ Click "Return to Create Screen" in the blue bar at the bottom of Settings.
 The X in the upper-right corner closes the entire program.
 
 GITHUB UPDATES
-The program can check a public GitHub repository's Releases page for updates.
+The installed program checks a public GitHub repository's Releases page for updates.
 It is preconfigured for m404ntfd/foldercreator. Open Settings > Updates to test
 the connection or change the details. See GITHUB-UPDATE-SETUP.txt for the
-complete release instructions.
+complete release instructions. The expected update asset is ShirtFolderSetup.exe.
 
 SETTINGS LOCATION
 The program stores its settings and creation history in:

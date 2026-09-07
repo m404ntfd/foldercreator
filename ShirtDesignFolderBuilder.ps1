@@ -4,8 +4,11 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-$script:AppName = 'Shirt Design Folder Builder'
-$script:AppVersion = [version]'1.2.1'
+$script:AppName = 'J&M Apparel Shirt Design Folder Builder'
+$script:AppVersion = [version]'2.0.0'
+$processExecutable = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+$processName = [System.IO.Path]::GetFileNameWithoutExtension($processExecutable)
+$script:ProgramDirectory = if ($processName -in @('powershell', 'powershell_ise', 'pwsh')) { $PSScriptRoot } else { Split-Path -Parent $processExecutable }
 $script:DataDirectory = Join-Path $env:APPDATA 'ShirtDesignFolderBuilder'
 $script:SettingsPath = Join-Path $script:DataDirectory 'settings.json'
 $script:Settings = $null
@@ -16,7 +19,7 @@ function New-DefaultSettings {
         DefaultDirectory = [Environment]::GetFolderPath('MyDocuments')
         GitHubOwner = 'm404ntfd'
         GitHubRepository = 'foldercreator'
-        UpdateAssetName = 'ShirtFolderProgram.zip'
+        UpdateAssetName = 'ShirtFolderSetup.exe'
         CheckForUpdatesOnLaunch = $true
         Categories = @(
             [pscustomobject]@{
@@ -69,10 +72,11 @@ function Load-Settings {
             Ensure-ArrayProperty $loaded 'CreatedDesigns'
             Ensure-SettingProperty $loaded 'GitHubOwner' 'm404ntfd'
             Ensure-SettingProperty $loaded 'GitHubRepository' 'foldercreator'
-            Ensure-SettingProperty $loaded 'UpdateAssetName' 'ShirtFolderProgram.zip'
+            Ensure-SettingProperty $loaded 'UpdateAssetName' 'ShirtFolderSetup.exe'
             Ensure-SettingProperty $loaded 'CheckForUpdatesOnLaunch' $true
             if ([string]::IsNullOrWhiteSpace([string]$loaded.GitHubOwner)) { $loaded.GitHubOwner = 'm404ntfd' }
             if ([string]::IsNullOrWhiteSpace([string]$loaded.GitHubRepository)) { $loaded.GitHubRepository = 'foldercreator' }
+            if ([string]$loaded.UpdateAssetName -eq 'ShirtFolderProgram.zip') { $loaded.UpdateAssetName = 'ShirtFolderSetup.exe' }
             foreach ($category in $loaded.Categories) { Ensure-ArrayProperty $category 'Subcategories' }
             return $loaded
         } catch {
@@ -107,10 +111,22 @@ function Start-AppUpdate($Release) {
     $assetName = [string]$script:Settings.UpdateAssetName
     $asset = @($Release.assets) | Where-Object { [string]$_.name -eq $assetName } | Select-Object -First 1
     if ($null -eq $asset) {
-        throw "The latest release does not contain an asset named '$assetName'. Upload the program ZIP to the GitHub release using that exact filename, or change the asset name in Update Settings."
+        throw "The latest release does not contain an asset named '$assetName'. Upload the Windows installer to the GitHub release using that exact filename, or change the asset name in Update Settings."
     }
 
     $stage = Join-Path $env:TEMP ("ShirtFolderUpdate_" + [guid]::NewGuid().ToString('N'))
+    if ([System.IO.Path]::GetExtension($assetName) -ieq '.exe') {
+        New-Item -ItemType Directory -Path $stage -Force -ErrorAction Stop | Out-Null
+        $installerPath = Join-Path $stage $assetName
+        Set-UpdateStatus 'Downloading Windows installer...' ([System.Drawing.Color]::FromArgb(36, 99, 166))
+        Invoke-WebRequest -Uri ([string]$asset.browser_download_url) -OutFile $installerPath -UseBasicParsing -ErrorAction Stop
+        Unblock-File -LiteralPath $installerPath -ErrorAction SilentlyContinue
+        Set-UpdateStatus 'Starting installer...'
+        Start-Process -FilePath $installerPath -Verb RunAs
+        $form.Close()
+        return
+    }
+
     $zipPath = Join-Path $stage 'update.zip'
     $extractPath = Join-Path $stage 'extracted'
     New-Item -ItemType Directory -Path $extractPath -Force -ErrorAction Stop | Out-Null
@@ -144,7 +160,7 @@ try {
 '@
     [System.IO.File]::WriteAllText($helperPath, $helperScript, [System.Text.UTF8Encoding]::new($false))
     $processId = [System.Diagnostics.Process]::GetCurrentProcess().Id
-    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$helperPath`" -Source `"$sourcePath`" -Destination `"$PSScriptRoot`" -Stage `"$stage`" -AppProcessId $processId"
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$helperPath`" -Source `"$sourcePath`" -Destination `"$($script:ProgramDirectory)`" -Stage `"$stage`" -AppProcessId $processId"
     Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden
     $form.Close()
 }
@@ -167,7 +183,7 @@ function Check-GitHubUpdates([bool]$Automatic = $false) {
         $headers = @{ 'User-Agent' = 'ShirtDesignFolderBuilder'; 'Accept' = 'application/vnd.github+json' }
         $release = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get -ErrorAction Stop
         $tagText = (([string]$release.tag_name).Trim() -replace '^[vV]', '')
-        try { $latestVersion = [version]$tagText } catch { throw "The latest GitHub release tag '$($release.tag_name)' is not a version number. Use a tag such as v1.3.0." }
+        try { $latestVersion = [version]$tagText } catch { throw "The latest GitHub release tag '$($release.tag_name)' is not a version number. Use a tag such as v2.1.0." }
 
         if ($latestVersion -le $script:AppVersion) {
             Set-UpdateStatus "You have the latest version ($($script:AppVersion))." ([System.Drawing.Color]::FromArgb(34, 120, 74))
@@ -428,6 +444,10 @@ $form.Size = New-Object System.Drawing.Size(1020, 820)
 $form.MinimumSize = New-Object System.Drawing.Size(920, 700)
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 $form.BackColor = [System.Drawing.Color]::FromArgb(244, 248, 252)
+$programIconPath = Join-Path $script:ProgramDirectory 'JM-Folder-Creator.ico'
+if (Test-Path -LiteralPath $programIconPath) {
+    try { $form.Icon = New-Object System.Drawing.Icon($programIconPath) } catch { }
+}
 
 $layout = New-Object System.Windows.Forms.TableLayoutPanel
 $layout.Dock = 'Fill'
@@ -715,7 +735,7 @@ $lblUpdateStatus.BorderStyle = 'FixedSingle'
 $lblUpdateStatus.BackColor = [System.Drawing.Color]::White
 $lblUpdateStatus.Padding = New-Object System.Windows.Forms.Padding(8)
 $tabUpdates.Controls.Add($lblUpdateStatus)
-$tabUpdates.Controls.Add((New-Label 'GitHub releases must use version tags such as v1.3.0 and include a ZIP asset with the exact filename entered above.' 28 438 820 48))
+$tabUpdates.Controls.Add((New-Label 'GitHub releases must use version tags such as v2.1.0 and include an installer with the exact filename entered above.' 28 438 820 48))
 
 # EVENTS
 $cmbCategory.Add_SelectedIndexChanged({ Update-CreateSubcategories })
@@ -889,7 +909,7 @@ $btnSaveUpdateSettings.Add_Click({
         [System.Windows.Forms.MessageBox]::Show('The GitHub owner and repository may contain letters, numbers, periods, underscores, and hyphens only.', $script:AppName, 'OK', 'Warning') | Out-Null
         return
     }
-    if (-not $assetName) { $assetName = 'ShirtFolderProgram.zip'; $txtUpdateAssetName.Text = $assetName }
+    if (-not $assetName) { $assetName = 'ShirtFolderSetup.exe'; $txtUpdateAssetName.Text = $assetName }
     $script:Settings.GitHubOwner = $owner
     $script:Settings.GitHubRepository = $repository
     $script:Settings.UpdateAssetName = $assetName
