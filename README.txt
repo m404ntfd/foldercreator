@@ -1,7 +1,7 @@
 SHIRT DESIGN FOLDER BUILDER
 ===========================
 
-Program version: 2.2.0
+Program version: 2.2.1
 
 WINDOW RESIZING AND WINDOWS SNAP
 - The program can be freely resized like a standard Windows application.
@@ -34,6 +34,10 @@ FIRST-TIME SETUP
 
 BRAND AND COLOR CATALOG
 - Each brand can contain any number of color image files.
+- The Upload Color Files button stays directly above the selected brand's color
+  list, including when the program is snapped to half of the screen.
+- After a new brand is created, the program offers to open the upload picker
+  immediately.
 - Add, rename, and delete brands; upload, rename, replace, open, and delete colors.
 - Uploaded catalog files are kept in AppData and survive program updates.
 - Deleting catalog content does not remove files already copied to design folders.

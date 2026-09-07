@@ -5,7 +5,7 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $script:AppName = 'J&M Apparel Shirt Design Folder Builder'
-$script:AppVersion = [version]'2.2.0'
+$script:AppVersion = [version]'2.2.1'
 $processExecutable = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 $processName = [System.IO.Path]::GetFileNameWithoutExtension($processExecutable)
 $script:ProgramDirectory = if ($processName -in @('powershell', 'powershell_ise', 'pwsh')) { $PSScriptRoot } else { Split-Path -Parent $processExecutable }
@@ -896,7 +896,7 @@ $btnAddBrand = New-Button 'Add Brand' 25 420 115
 $btnRenameBrand = New-Button 'Rename' 150 420 105
 $btnDeleteBrand = New-Button 'Delete' 265 420 105
 $btnDeleteBrand.BackColor = [System.Drawing.Color]::FromArgb(139, 70, 63)
-$btnUploadColors = New-Button 'Upload Color Files' 465 420 165
+$btnUploadColors = New-Button 'Upload Color Files for Selected Brand' 465 50 270 38
 $btnRenameColor = New-Button 'Rename Color' 640 420 135
 $btnReplaceColor = New-Button 'Replace File' 465 464 130
 $btnOpenColor = New-Button 'Open File' 605 464 115
@@ -1127,13 +1127,14 @@ function Update-ResponsiveLayout {
         $lstBrands.Location = New-Object System.Drawing.Point(25, 50)
         $lstBrands.Size = New-Object System.Drawing.Size($brandColumnWidth, 350)
         $lblBrandColorsHeading.Location = New-Object System.Drawing.Point($brandRightX, 22)
-        $lstBrandColors.Location = New-Object System.Drawing.Point($brandRightX, 50)
-        $lstBrandColors.Size = New-Object System.Drawing.Size($brandColumnWidth, 350)
+        $btnUploadColors.Location = New-Object System.Drawing.Point($brandRightX, 50)
+        $btnUploadColors.Width = [Math]::Min(270, $brandColumnWidth)
+        $lstBrandColors.Location = New-Object System.Drawing.Point($brandRightX, 100)
+        $lstBrandColors.Size = New-Object System.Drawing.Size($brandColumnWidth, 300)
         $btnAddBrand.Location = New-Object System.Drawing.Point(25, 420)
         $btnRenameBrand.Location = New-Object System.Drawing.Point(150, 420)
         $btnDeleteBrand.Location = New-Object System.Drawing.Point(265, 420)
-        $btnUploadColors.Location = New-Object System.Drawing.Point($brandRightX, 420)
-        $btnRenameColor.Location = New-Object System.Drawing.Point(($brandRightX + 175), 420)
+        $btnRenameColor.Location = New-Object System.Drawing.Point($brandRightX, 420)
         $btnReplaceColor.Location = New-Object System.Drawing.Point($brandRightX, 464)
         $btnOpenColor.Location = New-Object System.Drawing.Point(($brandRightX + 140), 464)
         $btnDeleteColor.Location = New-Object System.Drawing.Point(($brandRightX + 265), 464)
@@ -1143,21 +1144,22 @@ function Update-ResponsiveLayout {
     } else {
         $brandListWidth = [Math]::Max(470, $settingsTabs.ClientSize.Width - 70)
         $lstBrands.Location = New-Object System.Drawing.Point(25, 50)
-        $lstBrands.Size = New-Object System.Drawing.Size($brandListWidth, 210)
-        $btnAddBrand.Location = New-Object System.Drawing.Point(25, 275)
-        $btnRenameBrand.Location = New-Object System.Drawing.Point(150, 275)
-        $btnDeleteBrand.Location = New-Object System.Drawing.Point(265, 275)
-        $lblBrandColorsHeading.Location = New-Object System.Drawing.Point(25, 330)
-        $lstBrandColors.Location = New-Object System.Drawing.Point(25, 358)
-        $lstBrandColors.Size = New-Object System.Drawing.Size($brandListWidth, 225)
-        $btnUploadColors.Location = New-Object System.Drawing.Point(25, 598)
-        $btnRenameColor.Location = New-Object System.Drawing.Point(200, 598)
-        $btnReplaceColor.Location = New-Object System.Drawing.Point(25, 642)
-        $btnOpenColor.Location = New-Object System.Drawing.Point(165, 642)
-        $btnDeleteColor.Location = New-Object System.Drawing.Point(290, 642)
-        $lblBrandCatalogHelp.Location = New-Object System.Drawing.Point(25, 696)
+        $lstBrands.Size = New-Object System.Drawing.Size($brandListWidth, 180)
+        $btnAddBrand.Location = New-Object System.Drawing.Point(25, 245)
+        $btnRenameBrand.Location = New-Object System.Drawing.Point(150, 245)
+        $btnDeleteBrand.Location = New-Object System.Drawing.Point(265, 245)
+        $lblBrandColorsHeading.Location = New-Object System.Drawing.Point(25, 300)
+        $btnUploadColors.Location = New-Object System.Drawing.Point(25, 328)
+        $btnUploadColors.Width = [Math]::Min(270, $brandListWidth)
+        $lstBrandColors.Location = New-Object System.Drawing.Point(25, 378)
+        $lstBrandColors.Size = New-Object System.Drawing.Size($brandListWidth, 180)
+        $btnRenameColor.Location = New-Object System.Drawing.Point(25, 573)
+        $btnReplaceColor.Location = New-Object System.Drawing.Point(170, 573)
+        $btnOpenColor.Location = New-Object System.Drawing.Point(310, 573)
+        $btnDeleteColor.Location = New-Object System.Drawing.Point(25, 617)
+        $lblBrandCatalogHelp.Location = New-Object System.Drawing.Point(25, 668)
         $lblBrandCatalogHelp.Width = $brandListWidth
-        $tabBrands.AutoScrollMinSize = New-Object System.Drawing.Size(0, 770)
+        $tabBrands.AutoScrollMinSize = New-Object System.Drawing.Size(0, 742)
     }
 
     $availableSettingsWidth = [Math]::Max(470, $settingsTabs.ClientSize.Width - 70)
@@ -1243,6 +1245,9 @@ $btnAddBrand.Add_Click({
     $script:Settings.BrandCatalog = @($script:Settings.BrandCatalog) + $brand
     Save-Settings; Refresh-BrandCatalog
     $lstBrands.SelectedIndex = $lstBrands.Items.Count - 1
+    if ([System.Windows.Forms.MessageBox]::Show("Brand '$name' was created. Would you like to upload its color files now?", $script:AppName, 'YesNo', 'Information') -eq 'Yes') {
+        $btnUploadColors.PerformClick()
+    }
 })
 $btnRenameBrand.Add_Click({
     $brand = Get-SelectedBrand
