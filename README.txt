@@ -1,7 +1,7 @@
 SHIRT DESIGN FOLDER BUILDER
 ===========================
 
-Program version: 2.3.0
+Program version: 2.4.0
 
 WINDOW RESIZING AND WINDOWS SNAP
 - The program can be freely resized like a standard Windows application.
@@ -48,9 +48,15 @@ BRAND AND COLOR CATALOG
 CREATING A DESIGN
 1. Select a category and subcategory.
 2. Enter the design name.
-3. Check every brand/color combination that will be offered for the shirt.
+3. Choose a shirt brand from the color dropdown and check the colors that will
+   be offered. Switch brands to select additional colors; previous selections
+   remain checked and the screen shows the total selected across all brands.
 4. Click "Create in Preset Location", or click "Choose Location & Create" for
    a one-time alternate destination.
+
+The Create screen only displays colors for the selected brand, preventing a
+large catalog from becoming one long scrolling list. "Select All Shown" checks
+the visible brand, while "Clear All Selections" clears every brand.
 
 The selected catalog files are copied into the new design's Colors Offered
 folder and named "Brand - Color" while retaining their original file type.

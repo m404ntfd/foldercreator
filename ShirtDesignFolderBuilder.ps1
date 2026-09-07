@@ -5,7 +5,7 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $script:AppName = 'J&M Apparel Shirt Design Folder Builder'
-$script:AppVersion = [version]'2.3.0'
+$script:AppVersion = [version]'2.4.0'
 $processExecutable = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 $processName = [System.IO.Path]::GetFileNameWithoutExtension($processExecutable)
 $script:ProgramDirectory = if ($processName -in @('powershell', 'powershell_ise', 'pwsh')) { $PSScriptRoot } else { Split-Path -Parent $processExecutable }
@@ -15,6 +15,9 @@ $script:CacheDirectory = Join-Path $script:DataDirectory 'Cache'
 $script:BrandCatalogDirectory = Join-Path $script:DataDirectory 'BrandCatalog'
 $script:Settings = $null
 $script:CreateColorChoices = @()
+$script:CreateBrandFilterIds = @()
+$script:SelectedColorIds = @{}
+$script:IsRefreshingColorChoices = $false
 
 function New-DefaultSettings {
     return [pscustomobject]@{
@@ -400,22 +403,59 @@ function Refresh-BrandCatalog {
     if ($selectedIndex -ge 0) { $lstBrands.SelectedIndex = $selectedIndex }
     elseif ($lstBrands.Items.Count -gt 0) { $lstBrands.SelectedIndex = 0 }
     else { Refresh-BrandColors }
+    Refresh-CreateBrandFilter
     Refresh-CreateColorChoices
+}
+
+function Get-ColorChoiceKey([string]$BrandId, [string]$ColorId) {
+    return "$BrandId|$ColorId"
+}
+
+function Update-SelectedColorCount {
+    if ($null -ne $lblSelectedColorCount) {
+        $count = @($script:SelectedColorIds.Keys).Count
+        $lblSelectedColorCount.Text = "$count color(s) selected across all brands"
+    }
+}
+
+function Refresh-CreateBrandFilter {
+    if ($null -eq $cmbColorBrand) { return }
+    $selectedBrandId = ''
+    if ($cmbColorBrand.SelectedIndex -ge 0 -and $cmbColorBrand.SelectedIndex -lt $script:CreateBrandFilterIds.Count) {
+        $selectedBrandId = [string]$script:CreateBrandFilterIds[$cmbColorBrand.SelectedIndex]
+    }
+
+    $validKeys = @{}
+    foreach ($brand in @($script:Settings.BrandCatalog)) {
+        foreach ($color in @($brand.Colors)) { $validKeys[(Get-ColorChoiceKey ([string]$brand.Id) ([string]$color.Id))] = $true }
+    }
+    foreach ($key in @($script:SelectedColorIds.Keys)) {
+        if (-not $validKeys.ContainsKey($key)) { $script:SelectedColorIds.Remove($key) }
+    }
+
+    $cmbColorBrand.Items.Clear()
+    $script:CreateBrandFilterIds = @()
+    $selectedIndex = -1
+    foreach ($brand in @($script:Settings.BrandCatalog | Sort-Object Name)) {
+        $script:CreateBrandFilterIds += [string]$brand.Id
+        $newIndex = $cmbColorBrand.Items.Add([string]$brand.Name)
+        if ([string]$brand.Id -eq $selectedBrandId) { $selectedIndex = $newIndex }
+    }
+    if ($selectedIndex -ge 0) { $cmbColorBrand.SelectedIndex = $selectedIndex }
+    elseif ($cmbColorBrand.Items.Count -gt 0) { $cmbColorBrand.SelectedIndex = 0 }
+    Update-SelectedColorCount
 }
 
 function Refresh-CreateColorChoices {
     if ($null -eq $clbDesignColors) { return }
-    $checkedIds = @{}
-    for ($index = 0; $index -lt $script:CreateColorChoices.Count; $index++) {
-        if ($clbDesignColors.GetItemChecked($index)) {
-            $choice = $script:CreateColorChoices[$index]
-            $checkedIds["$($choice.BrandId)|$($choice.ColorId)"] = $true
-        }
-    }
-
-    $script:CreateColorChoices = @()
-    $clbDesignColors.Items.Clear()
-    foreach ($brand in @($script:Settings.BrandCatalog | Sort-Object Name)) {
+    $script:IsRefreshingColorChoices = $true
+    try {
+        $script:CreateColorChoices = @()
+        $clbDesignColors.Items.Clear()
+        if ($cmbColorBrand.SelectedIndex -lt 0 -or $cmbColorBrand.SelectedIndex -ge $script:CreateBrandFilterIds.Count) { return }
+        $brandId = [string]$script:CreateBrandFilterIds[$cmbColorBrand.SelectedIndex]
+        $brand = @($script:Settings.BrandCatalog) | Where-Object { [string]$_.Id -eq $brandId } | Select-Object -First 1
+        if ($null -eq $brand) { return }
         foreach ($color in @($brand.Colors | Sort-Object Name)) {
             $choice = [pscustomobject]@{
                 BrandId = [string]$brand.Id
@@ -425,16 +465,31 @@ function Refresh-CreateColorChoices {
                 FileName = [string]$color.FileName
             }
             $script:CreateColorChoices += $choice
-            $newIndex = $clbDesignColors.Items.Add("$($choice.BrandName) — $($choice.ColorName)")
-            if ($checkedIds.ContainsKey("$($choice.BrandId)|$($choice.ColorId)")) { $clbDesignColors.SetItemChecked($newIndex, $true) }
+            $newIndex = $clbDesignColors.Items.Add([string]$choice.ColorName)
+            $key = Get-ColorChoiceKey $choice.BrandId $choice.ColorId
+            if ($script:SelectedColorIds.ContainsKey($key)) { $clbDesignColors.SetItemChecked($newIndex, $true) }
         }
+    } finally {
+        $script:IsRefreshingColorChoices = $false
+        Update-SelectedColorCount
     }
 }
 
 function Get-CheckedColorChoices {
     $selected = @()
-    foreach ($index in @($clbDesignColors.CheckedIndices)) {
-        if ([int]$index -lt $script:CreateColorChoices.Count) { $selected += $script:CreateColorChoices[([int]$index)] }
+    foreach ($brand in @($script:Settings.BrandCatalog | Sort-Object Name)) {
+        foreach ($color in @($brand.Colors | Sort-Object Name)) {
+            $key = Get-ColorChoiceKey ([string]$brand.Id) ([string]$color.Id)
+            if ($script:SelectedColorIds.ContainsKey($key)) {
+                $selected += [pscustomobject]@{
+                    BrandId = [string]$brand.Id
+                    BrandName = [string]$brand.Name
+                    ColorId = [string]$color.Id
+                    ColorName = [string]$color.Name
+                    FileName = [string]$color.FileName
+                }
+            }
+        }
     }
     return @($selected)
 }
@@ -765,18 +820,27 @@ $lblDefaultPath = New-Label '' 28 287 812 42
 $lblDefaultPath.ForeColor = [System.Drawing.Color]::DimGray
 $createGroup.Controls.Add($lblDefaultPath)
 
-$lblDesignColors = New-Label 'Brand colors available for this design' 28 333 500 24
+$lblDesignColors = New-Label 'Choose a brand, then select its available colors' 28 333 500 24
 $createGroup.Controls.Add($lblDesignColors)
+$cmbColorBrand = New-Object System.Windows.Forms.ComboBox
+$cmbColorBrand.DropDownStyle = 'DropDownList'
+$cmbColorBrand.Location = New-Object System.Drawing.Point(28, 360)
+$cmbColorBrand.Size = New-Object System.Drawing.Size(330, 30)
+$cmbColorBrand.DropDownWidth = 400
+$createGroup.Controls.Add($cmbColorBrand)
+$lblSelectedColorCount = New-Label '0 color(s) selected across all brands' 378 362 300 24
+$lblSelectedColorCount.ForeColor = [System.Drawing.Color]::DimGray
+$createGroup.Controls.Add($lblSelectedColorCount)
 $clbDesignColors = New-Object System.Windows.Forms.CheckedListBox
 $clbDesignColors.CheckOnClick = $true
-$clbDesignColors.Location = New-Object System.Drawing.Point(28, 360)
+$clbDesignColors.Location = New-Object System.Drawing.Point(28, 400)
 $clbDesignColors.Size = New-Object System.Drawing.Size(650, 84)
 $clbDesignColors.IntegralHeight = $false
 $clbDesignColors.BorderStyle = 'FixedSingle'
 $clbDesignColors.BackColor = [System.Drawing.Color]::White
 $createGroup.Controls.Add($clbDesignColors)
-$btnSelectAllColors = New-Button 'Select All' 696 360 144 36
-$btnClearColors = New-Button 'Clear Selections' 696 405 144 36
+$btnSelectAllColors = New-Button 'Select All Shown' 696 400 144 36
+$btnClearColors = New-Button 'Clear All Selections' 696 445 144 36
 $btnClearColors.BackColor = [System.Drawing.Color]::FromArgb(78, 91, 87)
 $createGroup.Controls.AddRange(@($btnSelectAllColors, $btnClearColors))
 
@@ -1065,16 +1129,20 @@ function Update-ResponsiveLayout {
         $lblDefaultPath.Width = $innerWidth
 
         $lblDesignColors.Location = New-Object System.Drawing.Point(28, 329)
-        $clbDesignColors.Location = New-Object System.Drawing.Point(28, 356)
+        $cmbColorBrand.Location = New-Object System.Drawing.Point(28, 356)
+        $cmbColorBrand.Width = [Math]::Min(360, $innerWidth)
+        $lblSelectedColorCount.Location = New-Object System.Drawing.Point(($cmbColorBrand.Right + 18), 358)
+        $lblSelectedColorCount.Width = [Math]::Max(170, $innerWidth - $cmbColorBrand.Width - 18)
+        $clbDesignColors.Location = New-Object System.Drawing.Point(28, 396)
         $clbDesignColors.Size = New-Object System.Drawing.Size(([Math]::Max(270, $innerWidth - 162)), 84)
-        $btnSelectAllColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 356)
-        $btnClearColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 404)
+        $btnSelectAllColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 396)
+        $btnClearColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 444)
 
-        $createButtonsLayout.Location = New-Object System.Drawing.Point(22, 456)
+        $createButtonsLayout.Location = New-Object System.Drawing.Point(22, 496)
         $createButtonsLayout.Width = [Math]::Max(300, $createGroup.ClientSize.Width - 44)
         $createButtonsLayout.Height = 108
-        $createGroup.Height = 586
-        $lblHint.Location = New-Object System.Drawing.Point(35, 625)
+        $createGroup.Height = 626
+        $lblHint.Location = New-Object System.Drawing.Point(35, 665)
     } else {
         $createGroup.Controls[0].Location = New-Object System.Drawing.Point(28, 36)
         $cmbCategory.Location = New-Object System.Drawing.Point(28, 62)
@@ -1092,16 +1160,20 @@ function Update-ResponsiveLayout {
         $lblDefaultPath.Width = $innerWidth
 
         $lblDesignColors.Location = New-Object System.Drawing.Point(28, 374)
-        $clbDesignColors.Location = New-Object System.Drawing.Point(28, 401)
+        $cmbColorBrand.Location = New-Object System.Drawing.Point(28, 401)
+        $cmbColorBrand.Width = [Math]::Min(360, $innerWidth)
+        $lblSelectedColorCount.Location = New-Object System.Drawing.Point(28, 433)
+        $lblSelectedColorCount.Width = $innerWidth
+        $clbDesignColors.Location = New-Object System.Drawing.Point(28, 459)
         $clbDesignColors.Size = New-Object System.Drawing.Size(([Math]::Max(270, $innerWidth - 162)), 84)
-        $btnSelectAllColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 401)
-        $btnClearColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 449)
+        $btnSelectAllColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 459)
+        $btnClearColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 507)
 
-        $createButtonsLayout.Location = New-Object System.Drawing.Point(22, 501)
+        $createButtonsLayout.Location = New-Object System.Drawing.Point(22, 559)
         $createButtonsLayout.Width = [Math]::Max(300, $createGroup.ClientSize.Width - 44)
         $createButtonsLayout.Height = 112
-        $createGroup.Height = 631
-        $lblHint.Location = New-Object System.Drawing.Point(35, 670)
+        $createGroup.Height = 689
+        $lblHint.Location = New-Object System.Drawing.Point(35, 728)
     }
     $lblHint.Width = [Math]::Max(460, $tabCreate.ClientSize.Width - 70)
 
@@ -1266,11 +1338,26 @@ $form.Add_Resize({ Update-ResponsiveLayout })
 $cmbCategory.Add_SelectedIndexChanged({ Update-CreateSubcategories })
 $cmbSubcategory.Add_SelectedIndexChanged({ Update-Preview })
 $txtDesignName.Add_TextChanged({ Update-Preview })
+$cmbColorBrand.Add_SelectedIndexChanged({ Refresh-CreateColorChoices })
+$clbDesignColors.Add_ItemCheck({
+    if ($script:IsRefreshingColorChoices) { return }
+    if ($_.Index -lt 0 -or $_.Index -ge $script:CreateColorChoices.Count) { return }
+    $choice = $script:CreateColorChoices[$_.Index]
+    $key = Get-ColorChoiceKey $choice.BrandId $choice.ColorId
+    if ($_.NewValue -eq [System.Windows.Forms.CheckState]::Checked) {
+        $script:SelectedColorIds[$key] = $true
+    } else {
+        $script:SelectedColorIds.Remove($key)
+    }
+    Update-SelectedColorCount
+})
 $btnSelectAllColors.Add_Click({
     for ($index = 0; $index -lt $clbDesignColors.Items.Count; $index++) { $clbDesignColors.SetItemChecked($index, $true) }
 })
 $btnClearColors.Add_Click({
+    $script:SelectedColorIds = @{}
     for ($index = 0; $index -lt $clbDesignColors.Items.Count; $index++) { $clbDesignColors.SetItemChecked($index, $false) }
+    Update-SelectedColorCount
 })
 
 $btnCreateDefault.Add_Click({ Create-DesignFolders ([string]$script:Settings.DefaultDirectory) })
