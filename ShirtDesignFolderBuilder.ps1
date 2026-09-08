@@ -5,19 +5,23 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $script:AppName = 'J&M Apparel Shirt Design Folder Builder'
-$script:AppVersion = [version]'2.4.0'
+$script:AppVersion = [version]'2.5.0'
 $processExecutable = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 $processName = [System.IO.Path]::GetFileNameWithoutExtension($processExecutable)
 $script:ProgramDirectory = if ($processName -in @('powershell', 'powershell_ise', 'pwsh')) { $PSScriptRoot } else { Split-Path -Parent $processExecutable }
 $script:DataDirectory = Join-Path $env:APPDATA 'ShirtDesignFolderBuilder'
 $script:SettingsPath = Join-Path $script:DataDirectory 'settings.json'
 $script:CacheDirectory = Join-Path $script:DataDirectory 'Cache'
+$script:SquareTokenPath = Join-Path $script:DataDirectory 'square-token.dat'
+$script:SquareCatalogCachePath = Join-Path $script:CacheDirectory 'square-catalog.json'
 $script:BrandCatalogDirectory = Join-Path $script:DataDirectory 'BrandCatalog'
 $script:Settings = $null
 $script:CreateColorChoices = @()
 $script:CreateBrandFilterIds = @()
 $script:SelectedColorIds = @{}
 $script:IsRefreshingColorChoices = $false
+$script:SquareItemChoices = @()
+$script:SquareCatalog = $null
 
 function New-DefaultSettings {
     return [pscustomobject]@{
@@ -27,6 +31,7 @@ function New-DefaultSettings {
         GitHubRepository = 'foldercreator'
         UpdateAssetName = 'ShirtFolderSetup.exe'
         CheckForUpdatesOnLaunch = $true
+        SquareColorModifierKeywords = 'color, colors, shirt color'
         Categories = @(
             [pscustomobject]@{
                 Id = 1
@@ -82,6 +87,7 @@ function Load-Settings {
             Ensure-SettingProperty $loaded 'GitHubRepository' 'foldercreator'
             Ensure-SettingProperty $loaded 'UpdateAssetName' 'ShirtFolderSetup.exe'
             Ensure-SettingProperty $loaded 'CheckForUpdatesOnLaunch' $true
+            Ensure-SettingProperty $loaded 'SquareColorModifierKeywords' 'color, colors, shirt color'
             if ([string]::IsNullOrWhiteSpace([string]$loaded.GitHubOwner)) { $loaded.GitHubOwner = 'm404ntfd' }
             if ([string]::IsNullOrWhiteSpace([string]$loaded.GitHubRepository)) { $loaded.GitHubRepository = 'foldercreator' }
             if ([string]$loaded.UpdateAssetName -eq 'ShirtFolderProgram.zip') { $loaded.UpdateAssetName = 'ShirtFolderSetup.exe' }
@@ -116,6 +122,176 @@ function Save-Settings {
     }
     $json = $script:Settings | ConvertTo-Json -Depth 12
     [System.IO.File]::WriteAllText($script:SettingsPath, $json, [System.Text.UTF8Encoding]::new($false))
+}
+
+function Set-SquareStatus([string]$Text, [System.Drawing.Color]$Color = [System.Drawing.Color]::DimGray) {
+    if ($null -ne $lblSquareStatus) {
+        $lblSquareStatus.Text = $Text
+        $lblSquareStatus.ForeColor = $Color
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+}
+
+function Get-SquareAccessToken {
+    if (-not (Test-Path -LiteralPath $script:SquareTokenPath -PathType Leaf)) { return '' }
+    try {
+        Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+        $protectedBytes = [Convert]::FromBase64String(([System.IO.File]::ReadAllText($script:SquareTokenPath)).Trim())
+        $plainBytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $protectedBytes,
+            $null,
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        return [System.Text.Encoding]::UTF8.GetString($plainBytes)
+    } catch {
+        return ''
+    }
+}
+
+function Save-SquareAccessToken([string]$Token) {
+    $cleanToken = $Token.Trim()
+    if ([string]::IsNullOrWhiteSpace($cleanToken)) { throw 'Enter a Square production access token.' }
+    Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+    $plainBytes = [System.Text.Encoding]::UTF8.GetBytes($cleanToken)
+    $protectedBytes = [System.Security.Cryptography.ProtectedData]::Protect(
+        $plainBytes,
+        $null,
+        [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+    )
+    [System.IO.File]::WriteAllText($script:SquareTokenPath, [Convert]::ToBase64String($protectedBytes), [System.Text.UTF8Encoding]::new($false))
+}
+
+function Invoke-SquareRequest([string]$Uri, [string]$Method = 'Get', $Body = $null) {
+    $token = Get-SquareAccessToken
+    if ([string]::IsNullOrWhiteSpace($token)) { throw 'Square is not connected. Open Settings > Square Connection and save an access token first.' }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $headers = @{
+        'Authorization' = "Bearer $token"
+        'Square-Version' = '2026-08-19'
+        'Accept' = 'application/json'
+    }
+    $arguments = @{
+        Uri = $Uri
+        Headers = $headers
+        Method = $Method
+        UseBasicParsing = $true
+        ErrorAction = 'Stop'
+    }
+    if ($null -ne $Body) {
+        $arguments.ContentType = 'application/json'
+        $arguments.Body = ($Body | ConvertTo-Json -Depth 10 -Compress)
+    }
+    return Invoke-RestMethod @arguments
+}
+
+function Test-SquareConnection {
+    Set-SquareStatus 'Testing the Square Item Library connection...' ([System.Drawing.Color]::FromArgb(36, 99, 166))
+    $response = Invoke-SquareRequest 'https://connect.squareup.com/v2/catalog/list?types=ITEM'
+    Set-SquareStatus 'Connected to Square. Catalog read access is working.' ([System.Drawing.Color]::FromArgb(34, 120, 74))
+    return $response
+}
+
+function Save-SquareCatalogCache($Catalog) {
+    if (-not (Test-Path -LiteralPath $script:CacheDirectory)) {
+        New-Item -ItemType Directory -Path $script:CacheDirectory -Force | Out-Null
+    }
+    $cache = [pscustomobject]@{
+        SyncedAt = (Get-Date).ToString('s')
+        Objects = @($Catalog)
+    }
+    [System.IO.File]::WriteAllText($script:SquareCatalogCachePath, ($cache | ConvertTo-Json -Depth 30), [System.Text.UTF8Encoding]::new($false))
+}
+
+function Load-SquareCatalogCache {
+    if ($null -ne $script:SquareCatalog) { return @($script:SquareCatalog) }
+    if (-not (Test-Path -LiteralPath $script:SquareCatalogCachePath -PathType Leaf)) { return @() }
+    try {
+        $cache = Get-Content -LiteralPath $script:SquareCatalogCachePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $script:SquareCatalog = @($cache.Objects)
+        return @($script:SquareCatalog)
+    } catch {
+        return @()
+    }
+}
+
+function Sync-SquareCatalog {
+    Set-SquareStatus 'Downloading items, categories, subcategories, and modifiers from Square...' ([System.Drawing.Color]::FromArgb(36, 99, 166))
+    $objects = @()
+    $cursor = ''
+    do {
+        $uri = 'https://connect.squareup.com/v2/catalog/list?types=ITEM%2CCATEGORY%2CMODIFIER_LIST'
+        if ($cursor) { $uri += '&cursor=' + [uri]::EscapeDataString($cursor) }
+        $response = Invoke-SquareRequest $uri
+        $objects += @($response.objects)
+        $cursor = [string]$response.cursor
+    } while (-not [string]::IsNullOrWhiteSpace($cursor))
+
+    $script:SquareCatalog = @($objects)
+    Save-SquareCatalogCache $script:SquareCatalog
+    $itemCount = @($objects | Where-Object { [string]$_.type -eq 'ITEM' -and -not [bool]$_.is_deleted }).Count
+    Set-SquareStatus "Square catalog refreshed. $itemCount active item(s) available." ([System.Drawing.Color]::FromArgb(34, 120, 74))
+    return @($script:SquareCatalog)
+}
+
+function Normalize-SquareName([string]$Value) {
+    return ((([string]$Value).Trim().ToLowerInvariant()) -replace '[^a-z0-9]', '')
+}
+
+function Get-SquareObjectById([object[]]$Objects, [string]$Id) {
+    return @($Objects | Where-Object { [string]$_.id -eq $Id }) | Select-Object -First 1
+}
+
+function Get-SquareCategoryNames($Item, [object[]]$Objects) {
+    $categoryIds = @()
+    foreach ($reference in @($Item.item_data.categories)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$reference.id)) { $categoryIds += [string]$reference.id }
+    }
+    if ($categoryIds.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$Item.item_data.category_id)) {
+        $categoryIds += [string]$Item.item_data.category_id
+    }
+
+    foreach ($categoryId in $categoryIds) {
+        $child = Get-SquareObjectById $Objects $categoryId
+        if ($null -eq $child) { continue }
+        $childName = [string]$child.category_data.name
+        $parentId = [string]$child.category_data.parent_category.id
+        if ([string]::IsNullOrWhiteSpace($parentId)) { $parentId = [string]$child.category_data.parent_category_id }
+        if (-not [string]::IsNullOrWhiteSpace($parentId)) {
+            $parent = Get-SquareObjectById $Objects $parentId
+            if ($null -ne $parent) {
+                return [pscustomobject]@{ Category = [string]$parent.category_data.name; Subcategory = $childName }
+            }
+        }
+    }
+    foreach ($categoryId in $categoryIds) {
+        $category = Get-SquareObjectById $Objects $categoryId
+        $categoryName = [string]$category.category_data.name
+        if (-not [string]::IsNullOrWhiteSpace($categoryName)) {
+            return [pscustomobject]@{ Category = $categoryName; Subcategory = '' }
+        }
+    }
+    return [pscustomobject]@{ Category = ''; Subcategory = '' }
+}
+
+function Get-SquareColorNames($Item, [object[]]$Objects) {
+    $keywords = @(([string]$script:Settings.SquareColorModifierKeywords).Split(',') | ForEach-Object { (Normalize-SquareName $_) } | Where-Object { $_ })
+    $colors = @()
+    foreach ($listInfo in @($Item.item_data.modifier_list_info)) {
+        if ([bool]$listInfo.enabled -eq $false -and $null -ne $listInfo.PSObject.Properties['enabled']) { continue }
+        $list = Get-SquareObjectById $Objects ([string]$listInfo.modifier_list_id)
+        if ($null -eq $list) { continue }
+        $listName = Normalize-SquareName ([string]$list.modifier_list_data.name)
+        $isColorList = $false
+        foreach ($keyword in $keywords) {
+            if ($listName -eq $keyword -or $listName.Contains($keyword)) { $isColorList = $true; break }
+        }
+        if (-not $isColorList) { continue }
+        foreach ($modifier in @($list.modifier_list_data.modifiers)) {
+            $modifierName = ([string]$modifier.modifier_data.name).Trim()
+            if ($modifierName) { $colors += $modifierName }
+        }
+    }
+    return @($colors | Sort-Object -Unique)
 }
 
 function Set-UpdateStatus([string]$Text, [System.Drawing.Color]$Color = [System.Drawing.Color]::DimGray) {
@@ -311,6 +487,139 @@ function Update-CreateCategories {
     }
     if ($cmbCategory.Items.Count -gt 0) { $cmbCategory.SelectedIndex = 0 }
     Update-CreateSubcategories
+}
+
+function Select-LocalCategoryFromSquare([string]$CategoryName, [string]$SubcategoryName) {
+    if ([string]::IsNullOrWhiteSpace($CategoryName)) { return @('Square item has no category.', 'Square item has no subcategory.') }
+    $messages = @()
+    $category = @($script:Settings.Categories | Where-Object { (Normalize-SquareName ([string]$_.Name)) -eq (Normalize-SquareName $CategoryName) }) | Select-Object -First 1
+    if ($null -eq $category) {
+        $answer = [System.Windows.Forms.MessageBox]::Show(
+            "Square category '$CategoryName' is not in the program yet. Add it now?",
+            $script:AppName,
+            'YesNo',
+            'Question'
+        )
+        if ($answer -eq 'Yes') {
+            $nextId = 1
+            if (@($script:Settings.Categories).Count -gt 0) { $nextId = ([int](($script:Settings.Categories | Measure-Object Id -Maximum).Maximum)) + 1 }
+            $category = [pscustomobject]@{ Id = $nextId; Name = $CategoryName.Trim(); Subcategories = @() }
+            $script:Settings.Categories = @($script:Settings.Categories) + $category
+            Save-Settings
+            Refresh-SettingsLists
+            Update-CreateCategories
+        } else {
+            return @("Category not changed: $CategoryName", "Subcategory not changed: $SubcategoryName")
+        }
+    }
+
+    $categoryIndex = [array]::IndexOf(@($script:Settings.Categories), $category)
+    if ($categoryIndex -ge 0) { $cmbCategory.SelectedIndex = $categoryIndex }
+
+    if ([string]::IsNullOrWhiteSpace($SubcategoryName)) {
+        $messages += 'Square item has no child subcategory.'
+        return $messages
+    }
+
+    $subcategory = @($category.Subcategories | Where-Object { (Normalize-SquareName ([string]$_.Name)) -eq (Normalize-SquareName $SubcategoryName) }) | Select-Object -First 1
+    if ($null -eq $subcategory) {
+        $answer = [System.Windows.Forms.MessageBox]::Show(
+            "Square subcategory '$SubcategoryName' is not under '$($category.Name)' in the program yet. Add it now?",
+            $script:AppName,
+            'YesNo',
+            'Question'
+        )
+        if ($answer -eq 'Yes') {
+            $nextId = 1
+            if (@($category.Subcategories).Count -gt 0) { $nextId = ([int](($category.Subcategories | Measure-Object Id -Maximum).Maximum)) + 1 }
+            $subcategory = [pscustomobject]@{ Id = $nextId; Name = $SubcategoryName.Trim() }
+            $category.Subcategories = @($category.Subcategories) + $subcategory
+            Save-Settings
+            Refresh-SettingsSubcategories
+            Update-CreateSubcategories
+        } else {
+            $messages += "Subcategory not changed: $SubcategoryName"
+            return $messages
+        }
+    }
+    $subcategoryIndex = [array]::IndexOf(@($category.Subcategories), $subcategory)
+    if ($subcategoryIndex -ge 0) { $cmbSubcategory.SelectedIndex = $subcategoryIndex }
+    return $messages
+}
+
+function Search-SquareItems {
+    try {
+        $objects = @(Load-SquareCatalogCache)
+        if ($objects.Count -eq 0) { $objects = @(Sync-SquareCatalog) }
+        $searchText = $txtSquareSearch.Text.Trim()
+        $items = @($objects | Where-Object {
+            [string]$_.type -eq 'ITEM' -and
+            -not [bool]$_.is_deleted -and
+            ([string]::IsNullOrWhiteSpace($searchText) -or ([string]$_.item_data.name).IndexOf($searchText, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+        } | Sort-Object { [string]$_.item_data.name })
+
+        $script:SquareItemChoices = @($items)
+        $cmbSquareItems.Items.Clear()
+        foreach ($item in $items) {
+            $categoryNames = Get-SquareCategoryNames $item $objects
+            $location = if ($categoryNames.Subcategory) { "$($categoryNames.Category) > $($categoryNames.Subcategory)" } elseif ($categoryNames.Category) { [string]$categoryNames.Category } else { 'Uncategorized' }
+            [void]$cmbSquareItems.Items.Add("$($item.item_data.name)  [$location]")
+        }
+        if ($cmbSquareItems.Items.Count -gt 0) {
+            $cmbSquareItems.SelectedIndex = 0
+            $lblSquareImportStatus.Text = "$($cmbSquareItems.Items.Count) matching Square item(s)."
+        } else {
+            $lblSquareImportStatus.Text = 'No matching Square items found.'
+        }
+    } catch {
+        $lblSquareImportStatus.Text = 'Square search failed.'
+        [System.Windows.Forms.MessageBox]::Show("The Square catalog could not be searched.`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Error') | Out-Null
+    }
+}
+
+function Import-SelectedSquareItem {
+    if ($cmbSquareItems.SelectedIndex -lt 0 -or $cmbSquareItems.SelectedIndex -ge $script:SquareItemChoices.Count) {
+        [System.Windows.Forms.MessageBox]::Show('Search for and select a Square item first.', $script:AppName, 'OK', 'Information') | Out-Null
+        return
+    }
+    $objects = @(Load-SquareCatalogCache)
+    $item = $script:SquareItemChoices[$cmbSquareItems.SelectedIndex]
+    $txtDesignName.Text = [string]$item.item_data.name
+    $categoryNames = Get-SquareCategoryNames $item $objects
+    $messages = @(Select-LocalCategoryFromSquare ([string]$categoryNames.Category) ([string]$categoryNames.Subcategory))
+
+    $squareColors = @(Get-SquareColorNames $item $objects)
+    $script:SelectedColorIds = @{}
+    $matchedColors = @()
+    $missingColors = @()
+    $brandId = ''
+    if ($cmbColorBrand.SelectedIndex -ge 0 -and $cmbColorBrand.SelectedIndex -lt $script:CreateBrandFilterIds.Count) {
+        $brandId = [string]$script:CreateBrandFilterIds[$cmbColorBrand.SelectedIndex]
+    }
+    $brand = @($script:Settings.BrandCatalog | Where-Object { [string]$_.Id -eq $brandId }) | Select-Object -First 1
+    foreach ($squareColor in $squareColors) {
+        $color = if ($null -ne $brand) {
+            @($brand.Colors | Where-Object { (Normalize-SquareName ([string]$_.Name)) -eq (Normalize-SquareName $squareColor) }) | Select-Object -First 1
+        } else { $null }
+        if ($null -ne $color) {
+            $script:SelectedColorIds[(Get-ColorChoiceKey ([string]$brand.Id) ([string]$color.Id))] = $true
+            $matchedColors += $squareColor
+        } else {
+            $missingColors += $squareColor
+        }
+    }
+    Refresh-CreateColorChoices
+    Update-Preview
+
+    if ($squareColors.Count -eq 0) { $messages += 'No enabled color modifier list was found on this Square item.' }
+    if ($missingColors.Count -gt 0) {
+        $brandName = if ($null -ne $brand) { [string]$brand.Name } else { 'the selected brand' }
+        $messages += "No uploaded $brandName color file matched: $($missingColors -join ', ')"
+    }
+    $summary = "Imported '$($item.item_data.name)'.`r`nMatched color files: $($matchedColors.Count) of $($squareColors.Count)."
+    if ($messages.Count -gt 0) { $summary += "`r`n`r`n" + ($messages -join "`r`n") }
+    $lblSquareImportStatus.Text = "Imported: $($item.item_data.name)"
+    [System.Windows.Forms.MessageBox]::Show($summary, $script:AppName, 'OK', 'Information') | Out-Null
 }
 
 function ConvertTo-SafeFilePart([string]$Name) {
@@ -649,6 +958,10 @@ function Clear-CreatedDesignHistoryAndCache {
             $cacheItemsRemoved += @(Get-ChildItem -LiteralPath $script:CacheDirectory -Force -ErrorAction SilentlyContinue).Count
             Remove-Item -LiteralPath $script:CacheDirectory -Recurse -Force -ErrorAction SilentlyContinue
         }
+        $script:SquareCatalog = $null
+        $script:SquareItemChoices = @()
+        if ($null -ne $cmbSquareItems) { $cmbSquareItems.Items.Clear() }
+        if ($null -ne $lblSquareImportStatus) { $lblSquareImportStatus.Text = 'Square catalog cache cleared. Search to download it again.' }
 
         Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'ShirtFolderUpdate_*' -ErrorAction SilentlyContinue | ForEach-Object {
             Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
@@ -742,6 +1055,8 @@ $menuCategories = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuCategories.Text = 'Categories && Subcategories'
 $menuBrands = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuBrands.Text = 'Brands && Colors'
+$menuSquare = New-Object System.Windows.Forms.ToolStripMenuItem
+$menuSquare.Text = 'Square Connection'
 $menuFolderTemplate = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuFolderTemplate.Text = 'Folder Template'
 $menuPresetLocation = New-Object System.Windows.Forms.ToolStripMenuItem
@@ -750,6 +1065,7 @@ $menuUpdates = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuUpdates.Text = 'Updates'
 [void]$menuSettings.DropDownItems.Add($menuCategories)
 [void]$menuSettings.DropDownItems.Add($menuBrands)
+[void]$menuSettings.DropDownItems.Add($menuSquare)
 [void]$menuSettings.DropDownItems.Add($menuFolderTemplate)
 [void]$menuSettings.DropDownItems.Add($menuPresetLocation)
 [void]$menuSettings.DropDownItems.Add($menuUpdates)
@@ -786,29 +1102,53 @@ $createGroup.Size = New-Object System.Drawing.Size(880, 445)
 $createGroup.Anchor = 'Top,Left,Right'
 $tabCreate.Controls.Add($createGroup)
 
-$createGroup.Controls.Add((New-Label 'Category' 28 42 350))
+$lblSquareItem = New-Label 'Import from Square Item Library' 28 32 350
+$createGroup.Controls.Add($lblSquareItem)
+$txtSquareSearch = New-Object System.Windows.Forms.TextBox
+$txtSquareSearch.Location = New-Object System.Drawing.Point(28, 58)
+$txtSquareSearch.Size = New-Object System.Drawing.Size(440, 30)
+$txtSquareSearch.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+$createGroup.Controls.Add($txtSquareSearch)
+$btnSearchSquare = New-Button 'Search Square' 480 55 140 34
+$btnImportSquare = New-Button 'Use Selected Item' 632 55 178 34
+$createGroup.Controls.AddRange(@($btnSearchSquare, $btnImportSquare))
+$cmbSquareItems = New-Object System.Windows.Forms.ComboBox
+$cmbSquareItems.DropDownStyle = 'DropDownList'
+$cmbSquareItems.Location = New-Object System.Drawing.Point(28, 96)
+$cmbSquareItems.Size = New-Object System.Drawing.Size(580, 30)
+$cmbSquareItems.DropDownWidth = 700
+$createGroup.Controls.Add($cmbSquareItems)
+$lblSquareImportStatus = New-Label 'Search your Square catalog, then choose an item.' 620 99 220 24
+$lblSquareImportStatus.ForeColor = [System.Drawing.Color]::DimGray
+$createGroup.Controls.Add($lblSquareImportStatus)
+
+$lblCategory = New-Label 'Category' 28 145 350
+$createGroup.Controls.Add($lblCategory)
 $cmbCategory = New-Object System.Windows.Forms.ComboBox
 $cmbCategory.DropDownStyle = 'DropDownList'
-$cmbCategory.Location = New-Object System.Drawing.Point(28, 68)
+$cmbCategory.Location = New-Object System.Drawing.Point(28, 171)
 $cmbCategory.Size = New-Object System.Drawing.Size(385, 30)
 $createGroup.Controls.Add($cmbCategory)
 
-$createGroup.Controls.Add((New-Label 'Subcategory' 455 42 350))
+$lblSubcategory = New-Label 'Subcategory' 455 145 350
+$createGroup.Controls.Add($lblSubcategory)
 $cmbSubcategory = New-Object System.Windows.Forms.ComboBox
 $cmbSubcategory.DropDownStyle = 'DropDownList'
-$cmbSubcategory.Location = New-Object System.Drawing.Point(455, 68)
+$cmbSubcategory.Location = New-Object System.Drawing.Point(455, 171)
 $cmbSubcategory.Size = New-Object System.Drawing.Size(385, 30)
 $createGroup.Controls.Add($cmbSubcategory)
 
-$createGroup.Controls.Add((New-Label 'Design Name' 28 122 500))
+$lblDesignName = New-Label 'Design Name' 28 218 500
+$createGroup.Controls.Add($lblDesignName)
 $txtDesignName = New-Object System.Windows.Forms.TextBox
-$txtDesignName.Location = New-Object System.Drawing.Point(28, 148)
+$txtDesignName.Location = New-Object System.Drawing.Point(28, 244)
 $txtDesignName.Size = New-Object System.Drawing.Size(812, 30)
 $txtDesignName.Font = New-Object System.Drawing.Font('Segoe UI', 11)
 $createGroup.Controls.Add($txtDesignName)
 
-$createGroup.Controls.Add((New-Label 'Folder name preview' 28 200 300))
-$lblPreview = New-Label '' 28 226 812 43
+$lblPreviewHeading = New-Label 'Folder name preview' 28 291 300
+$createGroup.Controls.Add($lblPreviewHeading)
+$lblPreview = New-Label '' 28 317 812 43
 $lblPreview.Font = New-Object System.Drawing.Font('Segoe UI', 14, [System.Drawing.FontStyle]::Bold)
 $lblPreview.ForeColor = [System.Drawing.Color]::FromArgb(24, 62, 105)
 $lblPreview.BorderStyle = 'FixedSingle'
@@ -816,31 +1156,31 @@ $lblPreview.BackColor = [System.Drawing.Color]::White
 $lblPreview.Padding = New-Object System.Windows.Forms.Padding(8)
 $createGroup.Controls.Add($lblPreview)
 
-$lblDefaultPath = New-Label '' 28 287 812 42
+$lblDefaultPath = New-Label '' 28 374 812 42
 $lblDefaultPath.ForeColor = [System.Drawing.Color]::DimGray
 $createGroup.Controls.Add($lblDefaultPath)
 
-$lblDesignColors = New-Label 'Choose a brand, then select its available colors' 28 333 500 24
+$lblDesignColors = New-Label 'Choose a brand, then select its available colors' 28 420 500 24
 $createGroup.Controls.Add($lblDesignColors)
 $cmbColorBrand = New-Object System.Windows.Forms.ComboBox
 $cmbColorBrand.DropDownStyle = 'DropDownList'
-$cmbColorBrand.Location = New-Object System.Drawing.Point(28, 360)
+$cmbColorBrand.Location = New-Object System.Drawing.Point(28, 447)
 $cmbColorBrand.Size = New-Object System.Drawing.Size(330, 30)
 $cmbColorBrand.DropDownWidth = 400
 $createGroup.Controls.Add($cmbColorBrand)
-$lblSelectedColorCount = New-Label '0 color(s) selected across all brands' 378 362 300 24
+$lblSelectedColorCount = New-Label '0 color(s) selected across all brands' 378 449 300 24
 $lblSelectedColorCount.ForeColor = [System.Drawing.Color]::DimGray
 $createGroup.Controls.Add($lblSelectedColorCount)
 $clbDesignColors = New-Object System.Windows.Forms.CheckedListBox
 $clbDesignColors.CheckOnClick = $true
-$clbDesignColors.Location = New-Object System.Drawing.Point(28, 400)
+$clbDesignColors.Location = New-Object System.Drawing.Point(28, 487)
 $clbDesignColors.Size = New-Object System.Drawing.Size(650, 84)
 $clbDesignColors.IntegralHeight = $false
 $clbDesignColors.BorderStyle = 'FixedSingle'
 $clbDesignColors.BackColor = [System.Drawing.Color]::White
 $createGroup.Controls.Add($clbDesignColors)
-$btnSelectAllColors = New-Button 'Select All Shown' 696 400 144 36
-$btnClearColors = New-Button 'Clear All Selections' 696 445 144 36
+$btnSelectAllColors = New-Button 'Select All Shown' 696 487 144 36
+$btnClearColors = New-Button 'Clear All Selections' 696 532 144 36
 $btnClearColors.BackColor = [System.Drawing.Color]::FromArgb(78, 91, 87)
 $createGroup.Controls.AddRange(@($btnSelectAllColors, $btnClearColors))
 
@@ -852,7 +1192,7 @@ $btnManageCategories = New-Button 'Manage Categories' 28 405 180 30
 $btnManageCategories.BackColor = [System.Drawing.Color]::FromArgb(78, 91, 87)
 
 $createButtonsLayout = New-Object System.Windows.Forms.TableLayoutPanel
-$createButtonsLayout.Location = New-Object System.Drawing.Point(22, 468)
+$createButtonsLayout.Location = New-Object System.Drawing.Point(22, 585)
 $createButtonsLayout.Size = New-Object System.Drawing.Size(824, 108)
 $createButtonsLayout.Anchor = 'Top,Left,Right'
 $createButtonsLayout.ColumnCount = 2
@@ -1020,6 +1360,45 @@ $tabBrands.Controls.AddRange(@($btnAddBrand, $btnRenameBrand, $btnDeleteBrand, $
 $lblBrandCatalogHelp = New-Label 'Uploaded files are stored in the app catalog. Select one or more brand colors on the Create screen to copy them into Colors Offered.' 25 525 830 52
 $tabBrands.Controls.Add($lblBrandCatalogHelp)
 
+$tabSquare = New-Object System.Windows.Forms.TabPage
+$tabSquare.Text = 'Square Connection'
+$tabSquare.AutoScroll = $true
+$settingsTabs.TabPages.Add($tabSquare)
+$lblSquareHeading = New-Label 'Connect to the Square Item Library' 28 24 700 30
+$lblSquareHeading.Font = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
+$tabSquare.Controls.Add($lblSquareHeading)
+$lblSquareToken = New-Label 'Square production access token' 28 72 450
+$tabSquare.Controls.Add($lblSquareToken)
+$txtSquareToken = New-Object System.Windows.Forms.TextBox
+$txtSquareToken.Location = New-Object System.Drawing.Point(28, 100)
+$txtSquareToken.Size = New-Object System.Drawing.Size(600, 30)
+$txtSquareToken.UseSystemPasswordChar = $true
+$tabSquare.Controls.Add($txtSquareToken)
+$btnSaveSquareToken = New-Button 'Save & Test Connection' 28 148 210 40
+$btnTestSquare = New-Button 'Test Connection' 252 148 160 40
+$btnDisconnectSquare = New-Button 'Disconnect Square' 426 148 175 40
+$btnDisconnectSquare.BackColor = [System.Drawing.Color]::FromArgb(139, 70, 63)
+$tabSquare.Controls.AddRange(@($btnSaveSquareToken, $btnTestSquare, $btnDisconnectSquare))
+$lblSquareSecurity = New-Label 'The token is encrypted for the current Windows user and is never saved in normal settings, GitHub, logs, or design folders.' 28 205 820 48
+$lblSquareSecurity.ForeColor = [System.Drawing.Color]::DimGray
+$tabSquare.Controls.Add($lblSquareSecurity)
+$lblSquareKeywords = New-Label 'Color modifier-list names or keywords (comma-separated)' 28 275 650
+$tabSquare.Controls.Add($lblSquareKeywords)
+$txtSquareKeywords = New-Object System.Windows.Forms.TextBox
+$txtSquareKeywords.Location = New-Object System.Drawing.Point(28, 303)
+$txtSquareKeywords.Size = New-Object System.Drawing.Size(600, 30)
+$tabSquare.Controls.Add($txtSquareKeywords)
+$btnSaveSquareKeywords = New-Button 'Save Modifier Names' 28 350 190 40
+$btnRefreshSquareCatalog = New-Button 'Refresh Square Catalog' 232 350 205 40
+$tabSquare.Controls.AddRange(@($btnSaveSquareKeywords, $btnRefreshSquareCatalog))
+$lblSquareStatus = New-Label '' 28 414 817 72
+$lblSquareStatus.BorderStyle = 'FixedSingle'
+$lblSquareStatus.BackColor = [System.Drawing.Color]::White
+$lblSquareStatus.Padding = New-Object System.Windows.Forms.Padding(8)
+$tabSquare.Controls.Add($lblSquareStatus)
+$lblSquareHelp = New-Label 'Square mapping: item name → design name; parent category → category; child category → subcategory; color modifiers → uploaded files for the brand selected on the Create screen.' 28 505 820 60
+$tabSquare.Controls.Add($lblSquareHelp)
+
 $tabFolders = New-Object System.Windows.Forms.TabPage
 $tabFolders.Text = 'Folder Template'
 $tabFolders.AutoScroll = $true
@@ -1113,67 +1492,87 @@ function Update-ResponsiveLayout {
         $columnWidth = [Math]::Floor(($innerWidth - $columnGap) / 2)
         $rightX = 28 + $columnWidth + $columnGap
 
-        $createGroup.Controls[0].Location = New-Object System.Drawing.Point(28, 42)
-        $cmbCategory.Location = New-Object System.Drawing.Point(28, 68)
+        $lblSquareItem.Location = New-Object System.Drawing.Point(28, 32)
+        $txtSquareSearch.Location = New-Object System.Drawing.Point(28, 58)
+        $txtSquareSearch.Width = [Math]::Max(180, $innerWidth - 382)
+        $btnSearchSquare.Location = New-Object System.Drawing.Point(($txtSquareSearch.Right + 12), 55)
+        $btnImportSquare.Location = New-Object System.Drawing.Point(($btnSearchSquare.Right + 12), 55)
+        $cmbSquareItems.Location = New-Object System.Drawing.Point(28, 98)
+        $cmbSquareItems.Width = [Math]::Max(260, $innerWidth - 250)
+        $lblSquareImportStatus.Location = New-Object System.Drawing.Point(($cmbSquareItems.Right + 14), 101)
+        $lblSquareImportStatus.Width = [Math]::Max(190, $innerWidth - $cmbSquareItems.Width - 14)
+
+        $lblCategory.Location = New-Object System.Drawing.Point(28, 145)
+        $cmbCategory.Location = New-Object System.Drawing.Point(28, 171)
         $cmbCategory.Width = $columnWidth
-        $createGroup.Controls[2].Location = New-Object System.Drawing.Point($rightX, 42)
-        $cmbSubcategory.Location = New-Object System.Drawing.Point($rightX, 68)
+        $lblSubcategory.Location = New-Object System.Drawing.Point($rightX, 145)
+        $cmbSubcategory.Location = New-Object System.Drawing.Point($rightX, 171)
         $cmbSubcategory.Width = $columnWidth
-        $createGroup.Controls[4].Location = New-Object System.Drawing.Point(28, 122)
-        $txtDesignName.Location = New-Object System.Drawing.Point(28, 148)
+        $lblDesignName.Location = New-Object System.Drawing.Point(28, 218)
+        $txtDesignName.Location = New-Object System.Drawing.Point(28, 244)
         $txtDesignName.Width = $innerWidth
-        $createGroup.Controls[6].Location = New-Object System.Drawing.Point(28, 200)
-        $lblPreview.Location = New-Object System.Drawing.Point(28, 226)
+        $lblPreviewHeading.Location = New-Object System.Drawing.Point(28, 291)
+        $lblPreview.Location = New-Object System.Drawing.Point(28, 317)
         $lblPreview.Width = $innerWidth
-        $lblDefaultPath.Location = New-Object System.Drawing.Point(28, 287)
+        $lblDefaultPath.Location = New-Object System.Drawing.Point(28, 374)
         $lblDefaultPath.Width = $innerWidth
 
-        $lblDesignColors.Location = New-Object System.Drawing.Point(28, 329)
-        $cmbColorBrand.Location = New-Object System.Drawing.Point(28, 356)
+        $lblDesignColors.Location = New-Object System.Drawing.Point(28, 416)
+        $cmbColorBrand.Location = New-Object System.Drawing.Point(28, 443)
         $cmbColorBrand.Width = [Math]::Min(360, $innerWidth)
-        $lblSelectedColorCount.Location = New-Object System.Drawing.Point(($cmbColorBrand.Right + 18), 358)
+        $lblSelectedColorCount.Location = New-Object System.Drawing.Point(($cmbColorBrand.Right + 18), 445)
         $lblSelectedColorCount.Width = [Math]::Max(170, $innerWidth - $cmbColorBrand.Width - 18)
-        $clbDesignColors.Location = New-Object System.Drawing.Point(28, 396)
+        $clbDesignColors.Location = New-Object System.Drawing.Point(28, 483)
         $clbDesignColors.Size = New-Object System.Drawing.Size(([Math]::Max(270, $innerWidth - 162)), 84)
-        $btnSelectAllColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 396)
-        $btnClearColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 444)
+        $btnSelectAllColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 483)
+        $btnClearColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 531)
 
-        $createButtonsLayout.Location = New-Object System.Drawing.Point(22, 496)
+        $createButtonsLayout.Location = New-Object System.Drawing.Point(22, 583)
         $createButtonsLayout.Width = [Math]::Max(300, $createGroup.ClientSize.Width - 44)
         $createButtonsLayout.Height = 108
-        $createGroup.Height = 626
-        $lblHint.Location = New-Object System.Drawing.Point(35, 665)
+        $createGroup.Height = 713
+        $lblHint.Location = New-Object System.Drawing.Point(35, 752)
     } else {
-        $createGroup.Controls[0].Location = New-Object System.Drawing.Point(28, 36)
-        $cmbCategory.Location = New-Object System.Drawing.Point(28, 62)
+        $lblSquareItem.Location = New-Object System.Drawing.Point(28, 32)
+        $txtSquareSearch.Location = New-Object System.Drawing.Point(28, 58)
+        $txtSquareSearch.Width = $innerWidth
+        $btnSearchSquare.Location = New-Object System.Drawing.Point(28, 96)
+        $btnImportSquare.Location = New-Object System.Drawing.Point(180, 96)
+        $cmbSquareItems.Location = New-Object System.Drawing.Point(28, 140)
+        $cmbSquareItems.Width = $innerWidth
+        $lblSquareImportStatus.Location = New-Object System.Drawing.Point(28, 174)
+        $lblSquareImportStatus.Width = $innerWidth
+
+        $lblCategory.Location = New-Object System.Drawing.Point(28, 207)
+        $cmbCategory.Location = New-Object System.Drawing.Point(28, 233)
         $cmbCategory.Width = $innerWidth
-        $createGroup.Controls[2].Location = New-Object System.Drawing.Point(28, 105)
-        $cmbSubcategory.Location = New-Object System.Drawing.Point(28, 131)
+        $lblSubcategory.Location = New-Object System.Drawing.Point(28, 276)
+        $cmbSubcategory.Location = New-Object System.Drawing.Point(28, 302)
         $cmbSubcategory.Width = $innerWidth
-        $createGroup.Controls[4].Location = New-Object System.Drawing.Point(28, 174)
-        $txtDesignName.Location = New-Object System.Drawing.Point(28, 200)
+        $lblDesignName.Location = New-Object System.Drawing.Point(28, 345)
+        $txtDesignName.Location = New-Object System.Drawing.Point(28, 371)
         $txtDesignName.Width = $innerWidth
-        $createGroup.Controls[6].Location = New-Object System.Drawing.Point(28, 247)
-        $lblPreview.Location = New-Object System.Drawing.Point(28, 273)
+        $lblPreviewHeading.Location = New-Object System.Drawing.Point(28, 418)
+        $lblPreview.Location = New-Object System.Drawing.Point(28, 444)
         $lblPreview.Width = $innerWidth
-        $lblDefaultPath.Location = New-Object System.Drawing.Point(28, 329)
+        $lblDefaultPath.Location = New-Object System.Drawing.Point(28, 500)
         $lblDefaultPath.Width = $innerWidth
 
-        $lblDesignColors.Location = New-Object System.Drawing.Point(28, 374)
-        $cmbColorBrand.Location = New-Object System.Drawing.Point(28, 401)
+        $lblDesignColors.Location = New-Object System.Drawing.Point(28, 545)
+        $cmbColorBrand.Location = New-Object System.Drawing.Point(28, 572)
         $cmbColorBrand.Width = [Math]::Min(360, $innerWidth)
-        $lblSelectedColorCount.Location = New-Object System.Drawing.Point(28, 433)
+        $lblSelectedColorCount.Location = New-Object System.Drawing.Point(28, 604)
         $lblSelectedColorCount.Width = $innerWidth
-        $clbDesignColors.Location = New-Object System.Drawing.Point(28, 459)
+        $clbDesignColors.Location = New-Object System.Drawing.Point(28, 630)
         $clbDesignColors.Size = New-Object System.Drawing.Size(([Math]::Max(270, $innerWidth - 162)), 84)
-        $btnSelectAllColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 459)
-        $btnClearColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 507)
+        $btnSelectAllColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 630)
+        $btnClearColors.Location = New-Object System.Drawing.Point(($clbDesignColors.Right + 18), 678)
 
-        $createButtonsLayout.Location = New-Object System.Drawing.Point(22, 559)
+        $createButtonsLayout.Location = New-Object System.Drawing.Point(22, 730)
         $createButtonsLayout.Width = [Math]::Max(300, $createGroup.ClientSize.Width - 44)
         $createButtonsLayout.Height = 112
-        $createGroup.Height = 689
-        $lblHint.Location = New-Object System.Drawing.Point(35, 728)
+        $createGroup.Height = 860
+        $lblHint.Location = New-Object System.Drawing.Point(35, 899)
     }
     $lblHint.Width = [Math]::Max(460, $tabCreate.ClientSize.Width - 70)
 
@@ -1293,6 +1692,12 @@ function Update-ResponsiveLayout {
     $tabLocation.Controls[4].Width = $availableSettingsWidth
     $lblUpdateStatus.Width = $availableSettingsWidth
     $lblUpdateReleaseHelp.Width = $availableSettingsWidth
+    $txtSquareToken.Width = [Math]::Max(300, [Math]::Min(700, $availableSettingsWidth))
+    $txtSquareKeywords.Width = [Math]::Max(300, [Math]::Min(700, $availableSettingsWidth))
+    $lblSquareSecurity.Width = $availableSettingsWidth
+    $lblSquareStatus.Width = $availableSettingsWidth
+    $lblSquareHelp.Width = $availableSettingsWidth
+    $tabSquare.AutoScrollMinSize = New-Object System.Drawing.Size(0, 590)
 
     if ($settingsTabs.ClientSize.Width -ge 820) {
         $updateColumnWidth = [Math]::Floor(($availableSettingsWidth - 37) / 2)
@@ -1359,6 +1764,15 @@ $btnClearColors.Add_Click({
     for ($index = 0; $index -lt $clbDesignColors.Items.Count; $index++) { $clbDesignColors.SetItemChecked($index, $false) }
     Update-SelectedColorCount
 })
+$btnSearchSquare.Add_Click({ Search-SquareItems })
+$btnImportSquare.Add_Click({ Import-SelectedSquareItem })
+$txtSquareSearch.Add_KeyDown({
+    if ($_.KeyCode -eq [System.Windows.Forms.Keys]::Enter) {
+        $_.SuppressKeyPress = $true
+        Search-SquareItems
+    }
+})
+$cmbSquareItems.Add_DoubleClick({ Import-SelectedSquareItem })
 
 $btnCreateDefault.Add_Click({ Create-DesignFolders ([string]$script:Settings.DefaultDirectory) })
 $btnChooseCreate.Add_Click({
@@ -1650,11 +2064,57 @@ $gridCreated.Add_CellDoubleClick({ $btnOpenDesign.PerformClick() })
 
 $menuCategories.Add_Click({ $tabs.SelectedTab = $tabSettings; $settingsTabs.SelectedTab = $tabCat })
 $menuBrands.Add_Click({ $tabs.SelectedTab = $tabSettings; $settingsTabs.SelectedTab = $tabBrands })
+$menuSquare.Add_Click({ $tabs.SelectedTab = $tabSettings; $settingsTabs.SelectedTab = $tabSquare })
 $menuFolderTemplate.Add_Click({ $tabs.SelectedTab = $tabSettings; $settingsTabs.SelectedTab = $tabFolders })
 $menuPresetLocation.Add_Click({ $tabs.SelectedTab = $tabSettings; $settingsTabs.SelectedTab = $tabLocation })
 $menuUpdates.Add_Click({ $tabs.SelectedTab = $tabSettings; $settingsTabs.SelectedTab = $tabUpdates })
 $btnManageCategories.Add_Click({ $tabs.SelectedTab = $tabSettings; $settingsTabs.SelectedTab = $tabCat })
 $btnReturnToCreate.Add_Click({ $tabs.SelectedTab = $tabCreate; $txtDesignName.Focus() })
+$btnSaveSquareToken.Add_Click({
+    try {
+        Save-SquareAccessToken $txtSquareToken.Text
+        $txtSquareToken.Clear()
+        Test-SquareConnection | Out-Null
+        [System.Windows.Forms.MessageBox]::Show('Square was connected successfully. The access token is encrypted for this Windows user.', $script:AppName, 'OK', 'Information') | Out-Null
+    } catch {
+        Set-SquareStatus "Square connection failed: $($_.Exception.Message)" ([System.Drawing.Color]::FromArgb(170, 55, 55))
+        [System.Windows.Forms.MessageBox]::Show("Square could not be connected.`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Error') | Out-Null
+    }
+})
+$btnTestSquare.Add_Click({
+    try { Test-SquareConnection | Out-Null }
+    catch {
+        Set-SquareStatus "Square connection failed: $($_.Exception.Message)" ([System.Drawing.Color]::FromArgb(170, 55, 55))
+        [System.Windows.Forms.MessageBox]::Show("Square connection test failed.`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Error') | Out-Null
+    }
+})
+$btnDisconnectSquare.Add_Click({
+    if ([System.Windows.Forms.MessageBox]::Show('Disconnect Square on this PC and remove the locally encrypted access token?', $script:AppName, 'YesNo', 'Warning') -ne 'Yes') { return }
+    Remove-Item -LiteralPath $script:SquareTokenPath -Force -ErrorAction SilentlyContinue
+    $txtSquareToken.Clear()
+    Set-SquareStatus 'Square is disconnected on this PC.'
+})
+$btnSaveSquareKeywords.Add_Click({
+    $keywords = $txtSquareKeywords.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($keywords)) {
+        [System.Windows.Forms.MessageBox]::Show('Enter at least one color modifier-list name or keyword.', $script:AppName, 'OK', 'Warning') | Out-Null
+        return
+    }
+    $script:Settings.SquareColorModifierKeywords = $keywords
+    Save-Settings
+    Set-SquareStatus 'Square color modifier names saved.' ([System.Drawing.Color]::FromArgb(34, 120, 74))
+})
+$btnRefreshSquareCatalog.Add_Click({
+    try {
+        $btnSaveSquareKeywords.PerformClick()
+        Sync-SquareCatalog | Out-Null
+        $txtSquareSearch.Clear()
+        Search-SquareItems
+    } catch {
+        Set-SquareStatus "Square catalog refresh failed: $($_.Exception.Message)" ([System.Drawing.Color]::FromArgb(170, 55, 55))
+        [System.Windows.Forms.MessageBox]::Show("The Square catalog could not be refreshed.`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Error') | Out-Null
+    }
+})
 $btnSaveUpdateSettings.Add_Click({
     $owner = $txtGitHubOwner.Text.Trim()
     $repository = $txtGitHubRepository.Text.Trim()
@@ -1686,6 +2146,12 @@ $txtGitHubOwner.Text = [string]$script:Settings.GitHubOwner
 $txtGitHubRepository.Text = [string]$script:Settings.GitHubRepository
 $txtUpdateAssetName.Text = [string]$script:Settings.UpdateAssetName
 $chkUpdatesOnLaunch.Checked = [bool]$script:Settings.CheckForUpdatesOnLaunch
+$txtSquareKeywords.Text = [string]$script:Settings.SquareColorModifierKeywords
+if (Get-SquareAccessToken) {
+    Set-SquareStatus 'A Square access token is securely stored for this Windows user. Test the connection or refresh the catalog.' ([System.Drawing.Color]::FromArgb(34, 120, 74))
+} else {
+    Set-SquareStatus 'Square is not connected. Paste a production access token above, then choose Save & Test Connection.'
+}
 Set-UpdateStatus "Current version: $($script:AppVersion). Enter your GitHub release settings to enable updates."
 Update-Preview
 Update-ResponsiveLayout
