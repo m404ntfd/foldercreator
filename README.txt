@@ -1,7 +1,7 @@
 SHIRT DESIGN FOLDER BUILDER
 ===========================
 
-Program version: 2.4.0
+Program version: 2.5.0
 
 WINDOW RESIZING AND WINDOWS SNAP
 - The program can be freely resized like a standard Windows application.
@@ -31,6 +31,26 @@ FIRST-TIME SETUP
    folders should normally be created.
 5. Open Settings > Brands & Colors, add each shirt brand, and upload its color
    image files. The file name is used as the initial color name.
+
+SQUARE ITEM LIBRARY IMPORT
+- Open Settings > Square Connection and paste a Square production access token.
+- The token needs permission to read the Item Library (ITEMS_READ).
+- The token is protected with Windows DPAPI for the current Windows user. It is
+  not stored in settings.json, GitHub, logs, design history, or design folders.
+- Use Test Connection to verify access, then Refresh Square Catalog to download
+  the item information used by the Create screen.
+- On the Create screen, enter part of an item name and click Search Square. Choose
+  a result and click Use Selected Item.
+- The item name becomes the design name. A Square parent category becomes the
+  program category, and its child category becomes the program subcategory.
+- If a matching category or subcategory is not in the program, the program offers
+  to add it and assigns the next stable AA or BB number.
+- Enabled Square modifier lists whose names include Color, Colors, or Shirt Color
+  supply the available colors. These names can be changed under Square Connection.
+- Square color names are matched to uploaded files for the brand selected on the
+  Create screen. The import reports any Square color without a matching file.
+- The downloaded Square catalog is only a local cache. Clearing Created Designs
+  history and cache removes it, and it can be downloaded again at any time.
 
 BRAND AND COLOR CATALOG
 - Each brand can contain any number of color image files.
@@ -113,3 +133,6 @@ BACKUP TIP
 Include settings.json and the BrandCatalog folder in normal computer backups.
 Together they contain category numbers, design-number history, brand/color
 names, and uploaded catalog files.
+
+The encrypted Square token is tied to the Windows user and PC. Reconnect Square
+after moving the program to another Windows account or computer.
